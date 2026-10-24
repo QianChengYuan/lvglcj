@@ -1,0 +1,29 @@
+# 构建产物（cjpm 的 target/ 在仓库根和 examples/ 下都会生成，不能只忽略根目录）
+target/
+.cache/
+/.build/
+build-pi/
+build-sdl/
+build-win/
+
+# LVGL 上游源码（scripts/build-lvgl-*.sh 按需克隆，不入库）
+lvgl/
+lvgl-pi/
+lvgl-sdl/
+
+# 交叉编译中间文件
+*.o
+*.obj
+*.a.tmp
+
+# 本地 AI 技能包（由 cangjie-skills-install 安装，可随时重装，不属于项目源码）
+/.agents/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 注意：lib/{windows-x64,linux-x64,linux-arm64}/*.a 是随仓库发布的预编译静态库，**不要**忽略

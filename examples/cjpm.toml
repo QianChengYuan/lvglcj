@@ -1,0 +1,21 @@
+[package]
+cjc-version = "1.2.0"
+name = "lvglcjExamples"
+version = "0.1.0"
+output-type = "executable"
+description = "lvglcj 示例：hello / widgets / touch / image / canvas / perf"
+compile-option = ""
+# liblvgl.a 的 SDL 后端依赖 SDL2、中文渲染依赖 FreeType，
+# 静态库本身无法自带依赖声明，故消费方必须在最终链接时补 -lSDL2 -lfreetype。
+# 运行期还需要 SDL2.dll、libfreetype-6.dll 在 PATH 中（如 C:\msys64\ucrt64\bin）。
+link-option = "-lSDL2 -lfreetype"
+src-dir = "src"
+target-dir = "target"
+
+[dependencies]
+lvglcj = { path = ".." }
+
+[profile.customized-option]
+# 与库包保持一致：`cjpm build --cfg` 时按 SDL 后端条件编译
+# （cjpm 1.2.0 的键名只接受 cfg / cfg_1 / cfg_2 …，且 --cfg 只匹配字面量 cfg）
+cfg = "--cfg=\"lv_backend=sdl\""

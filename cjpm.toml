@@ -1,0 +1,59 @@
+[package]
+cjc-version = "1.2.0"
+name = "lvglcj"
+version = "0.1.0"
+output-type = "static"
+description = "仓颉语言的 LVGL 9.5 封装库（友好 API 层 + FFI 层 + C 垫片）"
+compile-option = ""
+link-option = ""
+src-dir = "src"
+target-dir = "target"
+
+[ffi.c]
+# 预编译静态库目录，由环境变量 LVGLCJ_LIB_DIR 决定（cjpm 1.2.0 支持 ${VAR} 替换，
+# 但**不支持** ${VAR:-默认值}，所以变量必须显式设置）。
+# 三份产物互不兼容（目标格式/位数不同），不能写死同一目录：
+#   Windows 本机：$env:LVGLCJ_LIB_DIR = "lib/windows-x64"    # PE x86_64（MSYS2 UCRT64 编）
+#   WSL 本机验证：export LVGLCJ_LIB_DIR=lib/linux-x64        # ELF x86_64（SDL2 后端）
+#   交叉到 Pi：   export LVGLCJ_LIB_DIR=lib/linux-arm64      # ELF aarch64（DRM + evdev）
+# 每个目录只需两个文件：liblvgl.a + liblvglcjshim.a
+# lv_conf.h 是配置源，统一放 native/config/{sdl,pi}/，不随产物走。
+lvgl = { path = "${LVGLCJ_LIB_DIR}" }
+lvglcjshim = { path = "${LVGLCJ_LIB_DIR}" }
+
+[profile.customized-option]
+# 自定义构建开关（cjpm build --cfg）。
+# cjpm 1.2.0 要求键名必须是 cfg / cfg_1 / cfg_2 …（其他名字会报
+# "the customized key ... is wrong, the example is 'cfg_1'"），且 `--cfg` 只匹配名为
+# 字面量 cfg 的键，故这里用 cfg。
+# 注意：--cfg 中的条件变量名不可与内置条件（os/arch/backend/env/debug/test/cjc_version）重名，
+# 这里用 lv_backend；代码侧以 @When[lv_backend == "sdl"] 分流。
+cfg = "--cfg=\"lv_backend=sdl\""
+
+[profile.build]
+# LTO：cjpm 1.2.0 只在 Linux/OHOS 生效。Windows 下写了会打印
+# "configuration failed, field 'profile.build.lto' ... only support compilation for Linux/OHOS"
+# 并被静默忽略。因此默认关闭，真机（Pi/Linux）发布构建时反注释下面这行：
+# lto = "full"
+incremental = true
+
+[profile.test]
+# 单元测试默认参数（测试源码在 src/test/，package lvglcj.test）
+# 需要真实显示窗口的用例打了 @Tag[requires_display]，默认排除；
+# 想跑它们：cjpm test --include-tags=requires_display
+exclude-tags = "requires_display"
+timeout-each = "60s"
+
+[test-dependencies]
+
+# 静态库带不出依赖，链接方（这里是库自己的 unittest_bin）必须补上。
+# 按目标平台声明，避免把 Windows 的 -lSDL2 带到 aarch64 上。
+[target.x86_64-w64-mingw32]
+link-option = "-lSDL2 -lfreetype"
+
+[target.x86_64-unknown-linux-gnu]
+link-option = "-lSDL2 -lfreetype"
+
+# Pi 真机：DRM + evdev + （若 lv_conf.h 开了 FREETYPE 再加 -lfreetype）
+[target.aarch64-unknown-linux-gnu]
+link-option = "-ldrm -levdev"
