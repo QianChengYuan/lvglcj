@@ -12,7 +12,8 @@ import lvglcj.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
-@Test
+// 测试类由 @Test/@TestCase 宏展开，展开出来的跑测函数无需（也无法）写 @throws 文档
+@Test // cjlint-ignore !G.ERR.01 宏展开生成的测试入口，异常由测试框架处理
 class ConstantTests {
 
     /** LV_OBJ_FLAG_*：9.5 里 CLICK_FOCUSABLE 占 1<<2，CHECKABLE 是 1<<3 */

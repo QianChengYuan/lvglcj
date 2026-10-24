@@ -6,52 +6,82 @@ package lvglcj
 
 /* ---- 生命周期 ---- */
 foreign func lv_obj_create(parent: CPointer<lv_obj_t>): CPointer<lv_obj_t>
+
 foreign func lv_obj_delete(obj: CPointer<lv_obj_t>): Unit
+
 foreign func lv_obj_delete_async(obj: CPointer<lv_obj_t>): Unit
+
 foreign func lv_obj_clean(obj: CPointer<lv_obj_t>): Unit
+
 foreign func lv_obj_get_parent(obj: CPointer<lv_obj_t>): CPointer<lv_obj_t>
+
 foreign func lv_obj_get_display(obj: CPointer<lv_obj_t>): CPointer<lv_display_t>
+
 foreign func lv_obj_invalidate(obj: CPointer<lv_obj_t>): Int32
 
 /* ---- 位置 / 尺寸 ---- */
 foreign func lv_obj_set_pos(obj: CPointer<lv_obj_t>, x: Int32, y: Int32): Unit
+
 foreign func lv_obj_set_x(obj: CPointer<lv_obj_t>, x: Int32): Unit
+
 foreign func lv_obj_set_y(obj: CPointer<lv_obj_t>, y: Int32): Unit
+
 foreign func lv_obj_set_size(obj: CPointer<lv_obj_t>, w: Int32, h: Int32): Unit
+
 foreign func lv_obj_set_width(obj: CPointer<lv_obj_t>, w: Int32): Unit
+
 foreign func lv_obj_set_height(obj: CPointer<lv_obj_t>, h: Int32): Unit
+
 foreign func lv_obj_get_width(obj: CPointer<lv_obj_t>): Int32
+
 foreign func lv_obj_get_height(obj: CPointer<lv_obj_t>): Int32
+
 foreign func lv_obj_align(obj: CPointer<lv_obj_t>, align: UInt32, xOfs: Int32, yOfs: Int32): Unit
+
 foreign func lv_obj_set_align(obj: CPointer<lv_obj_t>, align: UInt32): Unit
+
 foreign func lv_obj_center(obj: CPointer<lv_obj_t>): Unit
+
 foreign func lv_obj_update_layout(obj: CPointer<lv_obj_t>): Unit
 
 /* ---- 标志 / 状态 ---- */
 foreign func lv_obj_add_flag(obj: CPointer<lv_obj_t>, f: UInt32): Unit
+
 foreign func lv_obj_remove_flag(obj: CPointer<lv_obj_t>, f: UInt32): Unit
+
 foreign func lv_obj_has_flag(obj: CPointer<lv_obj_t>, f: UInt32): Bool
+
 foreign func lv_obj_get_state(obj: CPointer<lv_obj_t>): UInt32
+
 foreign func lv_obj_add_state(obj: CPointer<lv_obj_t>, state: UInt32): Unit
+
 foreign func lv_obj_remove_state(obj: CPointer<lv_obj_t>, state: UInt32): Unit
 
 /* ---- 样式 ---- */
 foreign func lv_obj_add_style(obj: CPointer<lv_obj_t>, style: CPointer<lv_style_t>, selector: UInt32): Unit
+
 foreign func lv_obj_remove_style(obj: CPointer<lv_obj_t>, style: CPointer<lv_style_t>, selector: UInt32): Unit
+
 foreign func lv_obj_remove_theme(obj: CPointer<lv_obj_t>, selector: UInt32): Unit
+
 foreign func lv_obj_refresh_style(obj: CPointer<lv_obj_t>, selector: UInt32): Unit
 
 /* ---- 事件 ---- */
-foreign func lv_obj_add_event_cb(obj: CPointer<lv_obj_t>, eventCb: CFunc<(CPointer<lv_event_t>) -> Unit>, filter: UInt32, userData: CPointer<Unit>): CPointer<Unit>
+foreign func lv_obj_add_event_cb(obj: CPointer<lv_obj_t>, eventCb: CFunc<(CPointer<lv_event_t>) -> Unit>,
+    filter: UInt32, userData: CPointer<Unit>): CPointer<Unit>
+
 foreign func lv_obj_send_event(obj: CPointer<lv_obj_t>, eventCode: UInt32, param: CPointer<Unit>): Int32
 
 /* ---- 用户数据 ---- */
 foreign func lv_obj_set_user_data(obj: CPointer<lv_obj_t>, userData: CPointer<Unit>): Unit
+
 foreign func lv_obj_get_user_data(obj: CPointer<lv_obj_t>): CPointer<Unit>
 
 /* ---- 事件查询 ---- */
 foreign func lv_event_get_code(e: CPointer<lv_event_t>): UInt32
+
 foreign func lv_event_get_target(e: CPointer<lv_event_t>): CPointer<lv_obj_t>
+
 foreign func lv_event_get_param(e: CPointer<lv_event_t>): CPointer<Unit>
 
 /* ==================== 常量（与 C 头文件核对，编译期值） ==================== */

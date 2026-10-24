@@ -28,6 +28,7 @@ public class Display {
     /**
      * DRM/KMS 后端（优先）。
      * @param card DRM 设备节点，默认 /dev/dri/card0
+     * @throws[LvglException] 当前构建未启用 LV_USE_LINUX_DRM，或打不开 `card`（无权限 / 设备不存在 / 被桌面占用）时
      */
     public static func drm(card!: String = "/dev/dri/card0"): Display {
         let disp = unsafe { lvglcj_linux_drm_create_cjbindwrapper() }
@@ -35,7 +36,7 @@ public class Display {
             throw LvglException("DRM 后端创建失败（$card，确认 vc4-kms-v3d 已启用，或当前构建未启用 LV_USE_LINUX_DRM）")
         }
         // connector_id = -1 表示自动选择第一个可用接口
-        let r = withCString(card) { cs => unsafe { lvglcj_linux_drm_set_file_cjbindwrapper(disp, cs, -1) } }
+        let r = withCString(card) {cs => unsafe { lvglcj_linux_drm_set_file_cjbindwrapper(disp, cs, -1) }}
         if (r != LV_RESULT_OK) {
             throw LvglException("DRM set_file 失败：$card")
         }
@@ -45,13 +46,14 @@ public class Display {
     /**
      * fbdev 后端（无 DRM 时的兜底）。
      * @param dev 帧缓冲设备节点，默认 /dev/fb0
+     * @throws[LvglException] 当前构建未启用 LV_USE_LINUX_FBDEV，或打不开 `dev` 时
      */
     public static func fbdev(dev!: String = "/dev/fb0"): Display {
         let disp = unsafe { lvglcj_linux_fbdev_create_cjbindwrapper() }
         if (disp.isNull()) {
             throw LvglException("fbdev 后端创建失败（$dev，或当前构建未启用 LV_USE_LINUX_FBDEV）")
         }
-        let r = withCString(dev) { cs => unsafe { lvglcj_linux_fbdev_set_file_cjbindwrapper(disp, cs) } }
+        let r = withCString(dev) {cs => unsafe { lvglcj_linux_fbdev_set_file_cjbindwrapper(disp, cs) }}
         if (r != LV_RESULT_OK) {
             throw LvglException("fbdev set_file 失败：$dev")
         }
@@ -61,6 +63,7 @@ public class Display {
     /**
      * SDL 后端（WSL/桌面模拟，WSLg 弹窗）。
      * 同时创建 SDL 鼠标与键盘输入设备，保证模拟环境下可直接交互。
+     * @throws[LvglException] SDL 窗口或渲染器创建失败（无显示环境、当前构建未启用 LV_USE_SDL）时
      */
     public static func sdl(w: Int32, h: Int32): Display {
         let disp = unsafe { lv_sdl_window_create(w, h) }
@@ -87,8 +90,7 @@ public class Display {
 
     /** 实际生效色深（位），由显示当前 color format 决定 */
     public func colorDepth(): UInt32 {
-        let cf = unsafe { lv_display_get_color_format(handle) }
-        unsafe { UInt32(lv_color_format_get_bpp(cf)) }
+        unsafe { UInt32(lv_color_format_get_bpp(lv_display_get_color_format(handle))) }
     }
 
     /** 当前活动屏幕 */

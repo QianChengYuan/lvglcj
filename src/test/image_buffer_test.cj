@@ -12,9 +12,9 @@ import lvglcj.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
-@Test
+// 测试类由 @Test/@TestCase 宏展开，展开出来的跑测函数无需（也无法）写 @throws 文档
+@Test // cjlint-ignore !G.ERR.01 宏展开生成的测试入口，异常由测试框架处理
 class ImageBufferTests {
-
     @TestCase
     func testDimensionsAreKept() {
         let buf = ImageBuffer(4, 3, LV_COLOR_FORMAT_RGB565)

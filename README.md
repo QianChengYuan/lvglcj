@@ -576,6 +576,40 @@ cjpm test --include-tags=requires_display --exclude-tags=notag   # 会真的弹�
 >
 > 另外 `@ExpectThrows` 是**括号**形式：`@ExpectThrows[LvglException](expr)`，不支持尾随 lambda。
 
+### 代码检查（格式 + 静态）
+
+`scripts/check.ps1` 封装了 `cjfmt` / `cjlint`（PowerShell 7，需先 `envsetup.ps1` 把 `tools\bin` 加进 PATH）：
+
+```powershell
+./scripts/check.ps1                 # 检查 src/ + examples/，只读
+./scripts/check.ps1 -Fix            # 格式不一致时就地格式化后重查
+./scripts/check.ps1 -SkipExamples   # 只查库源码
+./scripts/check.ps1 -SkipLint       # 只查格式
+./scripts/check.ps1 -SkipFormat     # 只跑静态检查
+```
+
+- **格式**：`cjfmt` 没有 `--check` 模式，脚本先格式化到 `target/check/fmt/`，再与原文逐字节比对，行尾（LF/CRLF）和末尾换行差异都能发现。
+- **静态**：`cjlint` 的 `-m` 必须指向 `CANGJIE_HOME` 根目录（不是 `modules/`），否则报 `Can not find modules`。报告输出到 `target/check/cjlint/cjlint-report.json`。
+- **判定**：格式不一致返回 1，`cjlint` 出现 ERROR/WARNING 返回 2（可叠加）；`SUGGESTIONS` 只汇总、不判失败。
+
+本库已确认的误报/既定风格固化在 `tools/cjlint/exclude_lists.json`，当前基线是 **0 条 SUGGESTIONS**。机制：
+
+- 豁免按"规则 + 文件名 + 行号"精确匹配（`cjlint` 不支持只按文件或只按规则豁免），新增代码仍会正常告警。
+- 脚本运行时把当前 SDK 的 `tools/config/` 复制到 `target/check/cjlint/config/`，再用仓库里的名单覆盖 `exclude_lists.json`；规则文件始终跟随 SDK，仓库只维护豁免项。
+- 代码改动导致行号漂移时，旧告警会重新出现，按报告补一条即可。
+
+已豁免的类别：FFI 结构体沿用 C 名（G.NAM.03）、`src/test/` 的包名约定（G.NAM.01）、`@Test` 宏展开产生的符号（G.NAM.03 / G.ITF.02）、`CPointer<T>` 同宽转换（FFI.C.7）、通配符导入（G.PKG.01）、FFI/绘图 API 的多参数（G.FUN.01），以及模块级状态和自增索引等已合理的作用域提示（G.VAR.02）。
+
+### 持续集成（GitHub Actions）
+
+`.github/workflows/ci.yml` 在 push / PR 到 `master` 时执行：
+
+- **格式与静态检查**：在 Linux 上运行 `scripts/check.ps1`（cjfmt + cjlint）。
+- **Linux x64**：安装 SDL2 / FreeType，执行 `cjpm build`、`cjpm test` 和 examples 构建。
+- **Windows x64**：用 MSYS2 UCRT64 提供 SDL2 / FreeType，执行同样的编译、测试和 examples 构建。
+
+SDK 由 `.github/actions/setup-cangjie` 从仓颉官网直链下载并校验 SHA-256，解压目录通过 `actions/cache` 复用；格式规则固定为仓库根的 `cangjie-format.toml`，避免 SDK 默认配置变化导致判定漂移。
+
 ### 引用方式
 
 ```toml

@@ -158,6 +158,15 @@ LVGL 9.5 没有导出 perf monitor 的查询 API（数据在私有结构体里�
 
 > 静态画面下 `fps` 会很低甚至为 1，这是正常的：LVGL 只在有脏区时才重绘。
 
+另有 LVGL 自带的屏幕悬浮监视器（默认右下角，显示 FPS/CPU 小字）：
+
+| 方法 | 说明 |
+|---|---|
+| `Perf.hideMonitor(disp!: Option<Display> = None)` | 隐藏悬浮标签（只是隐藏，采样照常） |
+| `Perf.showMonitor(disp!: Option<Display> = None)` | 重新显示 |
+
+`LV_USE_PERF_MONITOR=1` 时 `lv_display_create` 会自动把它打开，所以要么在创建 display 之后立刻 `Perf.hideMonitor()`，要么在 `lv_conf.h` 里把 `LV_USE_PERF_MONITOR` 设为 0 再重编静态库（后者才真正省掉这部分开销）。
+
 ### `Timer`
 
 ```cangjie
@@ -463,6 +472,9 @@ s.applyTo(button)
 | `Font.load(path: String, size!: Int32 = 16, bold!: Bool = false): Font` | 从 `.ttf/.ttc/.otf` 加载，**需 `LV_USE_FREETYPE=1`**；失败抛异常 |
 | `Font.systemCjk(size!: Int32 = 16, bold!: Bool = false): Font` | 按候选路径加载系统中文字体，找不到抛异常 |
 | `Font.trySystemCjk(size!, bold!): Option<Font>` | 同上，找不到返回 `None` |
+| `setFallback(fb: Font): Font` | 设置缺字回退字体（LVGL 9.5 `lv_font_t::fallback`），返回 `this`；**仅 FreeType 字体可用**，内置字体调用抛 `LvglException` |
+| `clearFallback(): Font` | 清空回退链（同样仅 FreeType 字体） |
+| `fallback(): Option<Font>` | 读取当前回退字体 |
 | `close()` | 释放 FreeType 字体；**内置字体（montserrat/defaultFont）调用是空操作**，可重复调用 |
 
 `systemCjk` / `trySystemCjk` 的候选路径顺序：
@@ -472,9 +484,22 @@ C:/Windows/Fonts/msyh.ttc                                    Windows 微软雅�
 C:/Windows/Fonts/Deng.ttf                                    Windows 等线
 C:/Windows/Fonts/simhei.ttf                                  Windows 黑体
 /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc       Debian/Ubuntu Noto CJK
+/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc       部分发行版的 Noto 位置
+/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf
 /usr/share/fonts/truetype/wqy/wqy-microhei.ttc               文泉驿微米黑
-/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf
+/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf    树莓派（只有 CJK，没有拉丁字母）
 ```
+
+> **系统 CJK 字体不一定带拉丁字形**：Raspberry Pi OS 只装 `DroidSansFallbackFull.ttf`，它没有 U+0021..U+007E，直接当主题字体时中文正常但 `LVGL 9.5` 会渲染成一排方框。挂个回退即可：
+>
+> ```cangjie
+> let f = Font.trySystemCjk(size: 16) ?? Font.defaultFont()
+> f.setFallback(Font.montserrat(16))   // 缺的字去 Montserrat 里找
+> Theme.default((0x1E, 0x88, 0xE5), (0x0F, 0x9D, 0x58), false, f)
+> ```
+>
+> 回退字体需比主字体**活得更久**（这里都是模块级/长生命周期对象，无需额外处理）。
+> 反过来不行：`Font.montserrat()` / `Font.defaultFont()` 指向 `const lv_font_t`（链接进只读段 `.rdata`/`.rodata`），写它的 `fallback` 字段会崩，所以 `setFallback` 在主字体是内置字体时直接抛异常。需要给内置字体加回退请用 `Font.load(...)` 自己加载。
 
 ### `Theme`
 

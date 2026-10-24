@@ -23,8 +23,7 @@ func cjTickCb(): UInt32 {
         case None =>
             tickBase = Some(MonoTime.now())
             0
-        case Some(base) =>
-            UInt32((MonoTime.now() - base).toMilliseconds())
+        case Some(base) => UInt32((MonoTime.now() - base).toMilliseconds())
     }
 }
 
@@ -126,14 +125,41 @@ public class Perf {
     public static func fps(): Float64 {
         perfFps
     }
+
+    /**
+     * 打开 LVGL 自带的监视器（右下角 FPS/CPU 小字）。
+     * `LV_USE_PERF_MONITOR=1` 时 `lv_display_create` 会自动显示它，本方法用于事后重开。
+     * @param disp 目标 display，None = 当前默认 display
+     */
+    public static func showMonitor(disp!: Option<Display> = None): Unit {
+        unsafe { lv_sysmon_show_performance(monitorTarget(disp)) }
+    }
+
+    /**
+     * 关掉 LVGL 自带的监视器（右下角 FPS/CPU 小字），只是隐藏，采样照常。
+     * 注意这只是隐藏悬浮标签；想完全省掉这部分开销，把 `lv_conf.h` 的
+     * `LV_USE_PERF_MONITOR` 设为 0 并重编静态库。
+     * @param disp 目标 display，None = 当前默认 display
+     */
+    public static func hideMonitor(disp!: Option<Display> = None): Unit {
+        unsafe { lv_sysmon_hide_performance(monitorTarget(disp)) }
+    }
+
+    /** None → 空指针，表示 LVGL 的默认 display */
+    private static func monitorTarget(disp: Option<Display>): CPointer<lv_display_t> {
+        match (disp) {
+            case Some(d) => d.raw()
+            case None => CPointer<lv_display_t>()
+        }
+    }
 }
 
 /* ==================== Timer ==================== */
 
 private class TimerEntry {
     var handle: CPointer<lv_timer_t>
-    var cb: () -> Unit
-    var repeat: Bool
+    let cb: () -> Unit
+    let repeat: Bool
 
     init(handle: CPointer<lv_timer_t>, cb: () -> Unit, repeat: Bool) {
         this.handle = handle
@@ -142,7 +168,8 @@ private class TimerEntry {
     }
 }
 
-private var timerEntries: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
+// 定时器注册表必须是模块级：C 侧只认静态分发函数，闭包状态不能跟着对象走。
+private let TIMER_ENTRIES: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
 
 /**
  * LVGL 定时器分发器：C 侧只见这个静态函数，仓颉闭包查注册表执行。
@@ -151,8 +178,8 @@ private var timerEntries: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
 @C
 func cjTimerDispatch(timer: CPointer<lv_timer_t>): Unit {
     let addr = timer.toUIntNative()
-    var finished: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
-    for (entry in timerEntries) {
+    let finished: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
+    for (entry in TIMER_ENTRIES) {
         if (entry.handle.toUIntNative() == addr) {
             entry.cb()
             if (!entry.repeat) {
@@ -163,9 +190,9 @@ func cjTimerDispatch(timer: CPointer<lv_timer_t>): Unit {
     for (entry in finished) {
         unsafe { lv_timer_delete(entry.handle) }
         var i: Int64 = 0
-        while (i < timerEntries.size) {
-            if (timerEntries[i].handle.toUIntNative() == addr) {
-                timerEntries.remove(at: i)
+        while (i < TIMER_ENTRIES.size) {
+            if (TIMER_ENTRIES[i].handle.toUIntNative() == addr) {
+                TIMER_ENTRIES.remove(at: i)
             } else {
                 i += 1
             }
@@ -188,9 +215,9 @@ public class Timer {
     }
 
     private static func register(period: UInt32, cb: () -> Unit, repeat: Bool): Unit {
-        timerEntries.add(TimerEntry(CPointer<lv_timer_t>(), cb, repeat))
-        let idx = timerEntries.size - 1
+        TIMER_ENTRIES.add(TimerEntry(CPointer<lv_timer_t>(), cb, repeat))
+        let idx = TIMER_ENTRIES.size - 1
         let handle = unsafe { lv_timer_create(cjTimerDispatch, period, CPointer<Unit>()) }
-        timerEntries[idx].handle = handle
+        TIMER_ENTRIES[idx].handle = handle
     }
 }

@@ -22,7 +22,8 @@ func ensureLvglInit(): Unit {
     }
 }
 
-@Test
+// 测试类由 @Test/@TestCase 宏展开，展开出来的跑测函数无需（也无法）写 @throws 文档
+@Test // cjlint-ignore !G.ERR.01 宏展开生成的测试入口，异常由测试框架处理
 class TestEnvTests {
 
     /** 重复调用不能崩（lv_init 不宜重入，靠这个 flag 保证只跑一次） */

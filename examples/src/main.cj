@@ -11,7 +11,7 @@
  *
  * 后端选择：优先 DRM/KMS（真机），失败回退 SDL 窗口（WSL/桌面）。
  */
-package lvglcjExamples
+package lvglcj_examples
 
 import lvglcj.*
 import std.collection.*
@@ -45,8 +45,14 @@ func uiFont(): Font {
  */
 func createDisplay(w!: Int32 = 480, h!: Int32 = 272): Display {
     let disp = openDisplay(w, h)
+    // LV_USE_PERF_MONITOR=1 时 display 一创建就带右下角 FPS/CPU 小字，演示里默认藏掉；
+    // 想看就调 Perf.showMonitor()。
+    Perf.hideMonitor(disp: Some(disp))
     let font = match (Font.trySystemCjk(size: 16)) {
-        case Some(f) => f
+        case Some(f) =>
+            // 系统 CJK 字体可能只含汉字（树莓派的 DroidSansFallbackFull 就没有拉丁字母），
+            // 把 Montserrat 挂成缺字回退，否则 "LVGL 9.5" 会渲染成一排方框。
+            f.setFallback(Font.montserrat(16))
         case None =>
             println("[lvglcj] 未找到系统中文字体，使用内置思源黑体子集")
             Font.defaultFont()
@@ -92,7 +98,7 @@ func demoWidgets(): Unit {
     let btnLabel = Label(btn)
     btnLabel.text("点我")
     btnLabel.center()
-    var clicks: Int32 = 0
+    let clicks: Int32 = 0
     let clickCell = Cell<Int32>(clicks)
     btn.onClick {
         =>
@@ -109,8 +115,8 @@ func demoWidgets(): Unit {
     let sliderLabel = Label(scr)
     sliderLabel.align(LV_ALIGN_LEFT_MID, dx: 16, dy: -6)
     sliderLabel.text("滑块：35")
-    slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
-        sliderLabel.setTextFmt("滑块：%d", slider.valueGet())
+    slider.onEvent(LV_EVENT_VALUE_CHANGED) {
+        _ => sliderLabel.setTextFmt("滑块：%d", slider.valueGet())
     }
 
     // 开关 / 复选框 / 进度条 / 圆弧 / LED
@@ -119,8 +125,12 @@ func demoWidgets(): Unit {
     let swLabel = Label(scr)
     swLabel.align(LV_ALIGN_LEFT_MID, dx: 70, dy: 22)
     swLabel.text("开关：关")
-    sw.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
-        swLabel.text(if (sw.isChecked()) { "开关：开" } else { "开关：关" })
+    sw.onEvent(LV_EVENT_VALUE_CHANGED) {
+        _ => swLabel.text(if (sw.isChecked()) {
+            "开关：开"
+        } else {
+            "开关：关"
+        })
     }
 
     let cb = Checkbox(scr)
@@ -174,11 +184,10 @@ func demoTouch(): Unit {
     marker.size(16, 16)
     marker.setStyleBgColor(255, 80, 80)
     Timer.every(50) {
-        =>
-            match (Input.activePoint()) {
-                case Some(p) => marker.pos(p[0] - 8, p[1] - 8)
-                case None => ()
-            }
+        => match (Input.activePoint()) {
+            case Some(p) => marker.pos(p[0] - 8, p[1] - 8)
+            case None => ()
+        }
     }
 
     App.run()
@@ -194,7 +203,7 @@ func demoImage(): Unit {
 
     // 横向渐变：每像素 2 字节，小端 RGB565 字面量（Color.rgb565 直接产出）
     let pixelCount = Int64(w) * Int64(h)
-    var bytes: Array<UInt8> = Array<UInt8>(pixelCount * 2, repeat: 0)
+    let bytes: Array<UInt8> = Array<UInt8>(pixelCount * 2, repeat: 0)
     var y: Int32 = 0
     while (y < h) {
         var x: Int32 = 0
@@ -286,7 +295,8 @@ func demoPerf(): Unit {
             let m = Mem.monitor()
             let usedKb = m.usedSize / 1024
             let totalKb = m.totalSize / 1024
-            stat.text("FPS ${Perf.fps()} | CPU ${Perf.cpu()}% | 内存 ${usedKb}/${totalKb} KB (${m.usedPct}% 已用, 碎片 ${m.fragPct}%)")
+            stat.text(
+                "FPS ${Perf.fps()} | CPU ${Perf.cpu()}% | 内存 ${usedKb}/${totalKb} KB (${m.usedPct}% 已用, 碎片 ${m.fragPct}%)")
             phase.value += 0.5
             load.value(Int32(50.0 + 45.0 * sin(phase.value)), anim: false)
     }

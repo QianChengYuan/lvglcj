@@ -10,9 +10,9 @@ import lvglcj.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
-@Test
+// 测试类由 @Test/@TestCase 宏展开，展开出来的跑测函数无需（也无法）写 @throws 文档
+@Test // cjlint-ignore !G.ERR.01 宏展开生成的测试入口，异常由测试框架处理
 class StyleTests {
-
     @BeforeAll
     func initRuntime() {
         ensureLvglInit()
@@ -67,5 +67,35 @@ class StyleTests {
     func testCloseOnBuiltinFontIsSafe() {
         Font.defaultFont().close()
         @Expect(true)
+    }
+
+    /**
+     * 缺字回退链：内置字体是只读的 const lv_font_t，写 fallback 会崩，
+     * 所以必须抛异常；FreeType 字体（可写）才可以挂链、读回、清空。
+     */
+    @TestCase
+    func testFontFallbackChain() {
+        @ExpectThrows[LvglException](Font.montserrat(16).setFallback(Font.defaultFont()))
+        @ExpectThrows[LvglException](Font.defaultFont().clearFallback())
+
+        match (Font.trySystemCjk(size: 16)) {
+            case Some(f) =>
+                f.setFallback(Font.defaultFont())
+                let hasFallback = match (f.fallback()) {
+                    case Some(_) => true
+                    case None => false
+                }
+                @Expect(hasFallback)
+                f.clearFallback()
+                let noFallback = match (f.fallback()) {
+                    case Some(_) => false
+                    case None => true
+                }
+                @Expect(noFallback)
+                f.close()
+            case None =>
+                // 本机没有系统 CJK 字体：无法构造可写的 FreeType 字体，跳过后半段
+                @Expect(true)
+        }
     }
 }

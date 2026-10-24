@@ -202,6 +202,24 @@ sudo apt install fonts-noto-cjk     # → /usr/share/fonts/opentype/noto/NotoSan
 
 同上 D1-2：主题在初始化时就把 `text_font` 写进了控件；要么重建主题（重新 `Theme.default` 并 `lv_theme_apply`），要么给控件/容器单独 `setFont`。
 
+### D5. 中文正常了，英文/数字却是方框
+
+字体本身**不含拉丁字形**。典型例子是树莓派（Raspberry Pi OS）唯一自带的中文字体
+`/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf`：它的 charset 从 `U+0020` 直接跳到 `U+0E3F`，
+中间的基本拉丁字母一个都没有 —— 于是中文好看了，`LVGL 9.5` 变成 `□□□□ □.□`。
+
+LVGL 9.5 的字体带缺字回退链，挂一个含拉丁的字体即可：
+
+```cangjie
+let f = Font.trySystemCjk(size: 16) ?? Font.defaultFont()
+f.setFallback(Font.montserrat(16))     // ASCII 交给 Montserrat
+Theme.default((0x1E,0x88,0xE5), (0x0F,0x9D,0x58), false, f)
+```
+
+排查手段：`fc-query -f "%{charset}\n" 字体文件 | tr ' ' '\n' | head` 看有没有 `21-7e` 段。
+
+注意回退链只能挂在 `Font.load` / `Font.systemCjk` 加载出来的字体上：`Font.montserrat` / `Font.defaultFont` 是链接进只读段的 `const lv_font_t`，写它的 `fallback` 会崩，所以 `setFallback` 会抛 `LvglException`。
+
 ---
 
 ## E. 输入与交互
@@ -247,6 +265,17 @@ evdev 发现是**轮询式**，需要主循环持续跑（`App.run()`）；桌�
 ```
 
 并且需要在主循环里跑（`App.run()` / `App.runOnce()` 才会采样）。
+
+### F3. 右下角那块 FPS/CPU 小字怎么去掉
+
+那是 LVGL 自带的 sysmon 悬浮标签，`LV_USE_PERF_MONITOR=1` 时 display 一创建就会被挂上。两种去法：
+
+```cangjie
+let disp = Display.sdl(480, 272)
+Perf.hideMonitor(disp: Some(disp))   // 运行时隐藏（采样照常，随时可 Perf.showMonitor() 恢复）
+```
+
+或者在 `lv_conf.h` 里 `#define LV_USE_PERF_MONITOR 0` 后重编静态库 —— 这样连采样定时器都不会创建，真正省 CPU。注意此时 `Perf.fps()` / `Perf.cpu()` 仍可用（那是本库自己在主循环里采的，与 sysmon 无关）。
 
 ### F3. `Mem.monitor()` 数字全是 0
 

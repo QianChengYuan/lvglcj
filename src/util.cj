@@ -73,8 +73,8 @@ public class MemStat {
     public let usedPct: UInt8
     public let fragPct: UInt8
 
-    public init(totalSize: UIntNative, freeSize: UIntNative, usedSize: UIntNative,
-                maxUsed: UIntNative, usedPct: UInt8, fragPct: UInt8) {
+    public init(totalSize: UIntNative, freeSize: UIntNative, usedSize: UIntNative, maxUsed: UIntNative, usedPct: UInt8,
+        fragPct: UInt8) {
         this.totalSize = totalSize
         this.freeSize = freeSize
         this.usedSize = usedSize
@@ -89,9 +89,8 @@ public class Mem {
     private init() {}
 
     public static func monitor(): MemStat {
-        var mon = lv_mem_monitor_t()
+        var mon = lv_mem_monitor_t() // cjlint-ignore !G.VAR.01 inout 出参必须是可变变量
         unsafe { lv_mem_monitor(inout mon) }
-        MemStat(mon.totalSize, mon.freeSize, mon.totalSize - mon.freeSize,
-                mon.maxUsed, mon.usedPct, mon.fragPct)
+        MemStat(mon.totalSize, mon.freeSize, mon.totalSize - mon.freeSize, mon.maxUsed, mon.usedPct, mon.fragPct)
     }
 }

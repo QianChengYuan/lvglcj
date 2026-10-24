@@ -1,6 +1,6 @@
 [package]
 cjc-version = "1.2.0"
-name = "lvglcjExamples"
+name = "lvglcj_examples"
 version = "0.1.0"
 output-type = "executable"
 description = "lvglcj 示例：hello / widgets / touch / image / canvas / perf"
@@ -19,3 +19,13 @@ lvglcj = { path = ".." }
 # 与库包保持一致：`cjpm build --cfg` 时按 SDL 后端条件编译
 # （cjpm 1.2.0 的键名只接受 cfg / cfg_1 / cfg_2 …，且 --cfg 只匹配字面量 cfg）
 cfg = "--cfg=\"lv_backend=sdl\""
+
+# 交叉到 Pi（aarch64 + SDL 后端）：
+#   export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib
+#   cjpm build --target aarch64-unknown-linux-gnu --cfg
+# 上面的全局 link-option 只适用于 x64；aarch64 需要显式 -L 到从 Pi 拷回来的 SDL2/FreeType。
+# --allow-shlib-undefined：libSDL2.so 自己依赖 libpulse/wayland/alsa/X11/gbm，
+# 交叉环境里没有这些 aarch64 库，但它们运行期由 Pi 提供，不需要在链接期解析。
+[target.aarch64-unknown-linux-gnu]
+compile-option = "--sysroot /usr/aarch64-linux-gnu --static"
+link-option = "-L${LVGLCJ_AARCH64_SDL_LIB} -lSDL2 -lfreetype --allow-shlib-undefined"

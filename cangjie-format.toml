@@ -1,0 +1,11 @@
+# lvglcj 的 cjfmt 格式配置。
+# 用法：cjfmt -d src -c cangjie-format.toml
+# 取值与仓颉 1.2.0 的 tools/config/cangjie-format.toml 一致，
+# 写进仓库是为了让格式判定不随 SDK 默认配置变化而漂移。
+
+indentWidth = 4
+linelimitLength = 120
+lineBreakType = "LF"
+allowMultiLineMethodChain = false
+multipleLineMethodChainLevel = 5
+multipleLineMethodChainOverLineLength = true

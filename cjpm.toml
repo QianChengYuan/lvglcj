@@ -15,7 +15,8 @@ target-dir = "target"
 # 三份产物互不兼容（目标格式/位数不同），不能写死同一目录：
 #   Windows 本机：$env:LVGLCJ_LIB_DIR = "lib/windows-x64"    # PE x86_64（MSYS2 UCRT64 编）
 #   WSL 本机验证：export LVGLCJ_LIB_DIR=lib/linux-x64        # ELF x86_64（SDL2 后端）
-#   交叉到 Pi：   export LVGLCJ_LIB_DIR=lib/linux-arm64      # ELF aarch64（DRM + evdev）
+#   交叉到 Pi：   export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl  # ELF aarch64（SDL 后端，桌面里跑）
+#   （lib/linux-arm64 是老 DRM+evdev 版，在 labwc 桌面下会抢 DRM master，仅在 tty 独占场景用）
 # 每个目录只需两个文件：liblvgl.a + liblvglcjshim.a
 # lv_conf.h 是配置源，统一放 native/config/{sdl,pi}/，不随产物走。
 lvgl = { path = "${LVGLCJ_LIB_DIR}" }
@@ -54,6 +55,11 @@ link-option = "-lSDL2 -lfreetype"
 [target.x86_64-unknown-linux-gnu]
 link-option = "-lSDL2 -lfreetype"
 
-# Pi 真机：DRM + evdev + （若 lv_conf.h 开了 FREETYPE 再加 -lfreetype）
+# Pi 真机（SDL 后端，桌面里跑）：
+#   交叉编译前必须设置（cjpm 不支持 ${VAR:-默认值}）：
+#     export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib
+#   --sysroot 指向 aarch64 的 glibc/crt，--static 让仓颉运行时静态链进可执行文件，
+#   这样 Pi 上不需要部署 libcangjie-runtime.so（只剩 libc/libm/libstdc++ 动态依赖）。
 [target.aarch64-unknown-linux-gnu]
-link-option = "-ldrm -levdev"
+compile-option = "--sysroot /usr/aarch64-linux-gnu --static"
+link-option = "-L${LVGLCJ_AARCH64_SDL_LIB} -lSDL2 -lfreetype"

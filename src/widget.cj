@@ -12,9 +12,9 @@ import std.fs.*
 /* ==================== 事件桥接 ==================== */
 
 private class EventEntry {
-    var objAddr: UIntNative
-    var mask: UInt32
-    var cb: (Event) -> Unit
+    let objAddr: UIntNative
+    let mask: UInt32
+    let cb: (Event) -> Unit
 
     init(objAddr: UIntNative, mask: UInt32, cb: (Event) -> Unit) {
         this.objAddr = objAddr
@@ -23,7 +23,8 @@ private class EventEntry {
     }
 }
 
-private var eventEntries: ArrayList<EventEntry> = ArrayList<EventEntry>()
+// 事件注册表必须是模块级：C 侧只认静态分发函数，闭包状态不能跟着控件对象走。
+private let EVENT_ENTRIES: ArrayList<EventEntry> = ArrayList<EventEntry>() // cjlint-ignore !G.VAR.02 回调注册表必须全局存活
 
 /**
  * LVGL 事件分发器：C 侧只见这个静态函数。
@@ -34,7 +35,7 @@ func cjEventDispatch(e: CPointer<lv_event_t>): Unit {
     let code = unsafe { lv_event_get_code(e) }
     let target = unsafe { lv_event_get_target(e) }
     let addr = target.toUIntNative()
-    for (entry in eventEntries) {
+    for (entry in EVENT_ENTRIES) {
         if (entry.objAddr == addr && (entry.mask == LV_EVENT_ALL || entry.mask == code)) {
             entry.cb(Event(e))
         }
@@ -121,7 +122,7 @@ public open class Widget {
 
     /** 订阅事件（mask 为 LV_EVENT_*；LV_EVENT_ALL 收全部） */
     public func onEvent(mask: UInt32, cb: (Event) -> Unit): Unit {
-        eventEntries.add(EventEntry(handle.toUIntNative(), mask, cb))
+        EVENT_ENTRIES.add(EventEntry(handle.toUIntNative(), mask, cb))
         unsafe {
             lv_obj_add_event_cb(handle, cjEventDispatch, mask, CPointer<Unit>())
         }
@@ -194,7 +195,7 @@ public class Label <: Widget {
     }
 
     public func text(s: String): Unit {
-        withCString(s) { cs => unsafe { lv_label_set_text(handle, cs) } }
+        withCString(s) {cs => unsafe { lv_label_set_text(handle, cs) }}
     }
 
     /** 顺序替换 %d 后设置文本（仓颉侧完成格式化；等价于 LVGL 的 set_text_fmt） */
@@ -227,7 +228,7 @@ public class TextArea <: Widget {
     }
 
     public func text(s: String): Unit {
-        withCString(s) { cs => unsafe { lv_textarea_set_text(handle, cs) } }
+        withCString(s) {cs => unsafe { lv_textarea_set_text(handle, cs) }}
     }
 
     public func oneLine(on: Bool): Unit {
@@ -263,7 +264,7 @@ public class Button <: Widget {
 
     /** 点击回调（LV_EVENT_CLICKED，主线程执行） */
     public func onClick(cb: () -> Unit): Unit {
-        onEvent(LV_EVENT_CLICKED) { _ => cb() }
+        onEvent(LV_EVENT_CLICKED) {_ => cb()}
     }
 
     /** 可勾选模式（状态用 LV_STATE_CHECKED） */
@@ -296,7 +297,7 @@ public class Checkbox <: Widget {
     }
 
     public func text(s: String): Unit {
-        withCString(s) { cs => unsafe { lv_checkbox_set_text(handle, cs) } }
+        withCString(s) {cs => unsafe { lv_checkbox_set_text(handle, cs) }}
     }
 
     public func setChecked(on: Bool): Unit {
@@ -320,7 +321,11 @@ public class Slider <: Widget {
     }
 
     public func value(v: Int32, anim!: Bool = true): Unit {
-        unsafe { lv_slider_set_value(handle, v, if (anim) { LV_ANIM_ON } else { LV_ANIM_OFF }) }
+        unsafe { lv_slider_set_value(handle, v, if (anim) {
+            LV_ANIM_ON
+        } else {
+            LV_ANIM_OFF
+        }) }
     }
 
     public func valueGet(): Int32 {
@@ -357,7 +362,11 @@ public class Bar <: Widget {
     }
 
     public func value(v: Int32, anim!: Bool = true): Unit {
-        unsafe { lv_bar_set_value(handle, v, if (anim) { LV_ANIM_ON } else { LV_ANIM_OFF }) }
+        unsafe { lv_bar_set_value(handle, v, if (anim) {
+            LV_ANIM_ON
+        } else {
+            LV_ANIM_OFF
+        }) }
     }
 
     public func range(min: Int32, max: Int32): Unit {
@@ -388,7 +397,7 @@ public class Dropdown <: Widget {
 
     /** 选项串，各项以 \n 分隔 */
     public func options(s: String): Unit {
-        withCString(s) { cs => unsafe { lv_dropdown_set_options(handle, cs) } }
+        withCString(s) {cs => unsafe { lv_dropdown_set_options(handle, cs) }}
     }
 }
 
@@ -398,7 +407,7 @@ public class Roller <: Widget {
     }
 
     public func options(s: String, mode!: UInt32 = LV_ROLLER_MODE_NORMAL): Unit {
-        withCString(s) { cs => unsafe { lv_roller_set_options(handle, cs, mode) } }
+        withCString(s) {cs => unsafe { lv_roller_set_options(handle, cs, mode) }}
     }
 
     public func selected(i: UInt32): Unit {
@@ -414,11 +423,11 @@ public class List <: Widget {
     }
 
     public func addText(s: String): Widget {
-        withCString(s) { cs => unsafe { Widget(lv_list_add_text(handle, cs)) } }
+        withCString(s) {cs => unsafe { Widget(lv_list_add_text(handle, cs)) }}
     }
 
     public func addButton(s: String): Button {
-        withCString(s) { cs => unsafe { Button(lv_list_add_button(handle, CPointer<Unit>(), cs)) } }
+        withCString(s) {cs => unsafe { Button(lv_list_add_button(handle, CPointer<Unit>(), cs)) }}
     }
 }
 
@@ -428,7 +437,7 @@ public class Table <: Widget {
     }
 
     public func cellValue(row: UInt32, col: UInt32, s: String): Unit {
-        withCString(s) { cs => unsafe { lv_table_set_cell_value(handle, row, col, cs) } }
+        withCString(s) {cs => unsafe { lv_table_set_cell_value(handle, row, col, cs) }}
     }
 }
 
@@ -438,7 +447,7 @@ public class TabView <: Widget {
     }
 
     public func addTab(name: String): Widget {
-        withCString(name) { cs => unsafe { Widget(lv_tabview_add_tab(handle, cs)) } }
+        withCString(name) {cs => unsafe { Widget(lv_tabview_add_tab(handle, cs)) }}
     }
 }
 
@@ -462,7 +471,7 @@ public class Win <: Widget {
     }
 
     public func addTitle(s: String): Label {
-        withCString(s) { cs => unsafe { Label(lv_win_add_title(handle, cs)) } }
+        withCString(s) {cs => unsafe { Label(lv_win_add_title(handle, cs)) }}
     }
 }
 
@@ -494,12 +503,14 @@ public class Image <: Widget {
      *
      * 注意：`lv_image_set_src` 返回 void，解码失败时 LVGL 只打 WARN 日志、控件显示空白，
      * 仓颉侧无法区分"文件在但格式不支持"——这种情况请检查 lv_conf.h 的解码器开关。
+     * @param path 图片文件路径（系统路径，垫片负责补驱动器字母）
+     * @throws[LvglException] `path` 不存在，或当前构建未启用 LV_USE_FS_STDIO 时
      */
     public func setFile(path: String): Unit {
         if (!exists(path)) {
             throw LvglException("图片文件不存在：${path}")
         }
-        let r = withCString(path) { cs => unsafe { lvglcj_image_set_file_cjbindwrapper(handle, cs) } }
+        let r = withCString(path) {cs => unsafe { lvglcj_image_set_file_cjbindwrapper(handle, cs) }}
         if (r != LV_RESULT_OK) {
             throw LvglException("图片加载失败：${path}（确认 lv_conf.h 已开 LV_USE_FS_STDIO 并重编了 liblvgl.a）")
         }
@@ -558,7 +569,11 @@ public class Line <: Widget {
         super(unsafe { lv_line_create(parent.raw()) })
     }
 
-    /** 设置折线顶点（至少 2 个点） */
+    /**
+     * 设置折线顶点（至少 2 个点）
+     * @param points 顶点坐标数组
+     * @throws[LvglException] 顶点少于 2 个，或顶点缓冲分配失败时
+     */
     public func setPoints(points: Array<(Int32, Int32)>): Unit {
         if (points.size < 2) {
             throw LvglException("Line.setPoints 至少需要 2 个点")
@@ -631,7 +646,7 @@ public class SpanPart {
 
     /** 设置本片段文本（C 侧内部拷贝，调用返回后可释放临时串） */
     public func text(s: String): SpanPart {
-        withCString(s) { cs => unsafe { lv_spangroup_set_span_text(owner, handle, cs) } }
+        withCString(s) {cs => unsafe { lv_spangroup_set_span_text(owner, handle, cs) }}
         unsafe { lv_spangroup_refresh(owner) }
         this
     }
@@ -758,7 +773,11 @@ public class Calendar <: Widget {
         Some((UInt32(d.year), UInt32(d.month), UInt32(d.day)))
     }
 
-    /** 高亮一组日期（year, month, day） */
+    /**
+     * 高亮一组日期（year, month, day）
+     * @param dates 待高亮日期；空数组直接返回，不清除已有高亮
+     * @throws[LvglException] 日期缓冲分配失败时
+     */
     public func highlight(dates: Array<(UInt32, UInt32, UInt32)>): Unit {
         if (dates.size == 0) {
             return
@@ -787,7 +806,7 @@ public class Calendar <: Widget {
 
     /** 用户点击选中的日期；未选中时返回 None */
     public func pressedDate(): Option<(UInt32, UInt32, UInt32)> {
-        var d = lv_calendar_date_t()
+        var d = lv_calendar_date_t() // cjlint-ignore !G.VAR.01 inout 出参必须是可变变量
         let r = unsafe { lv_calendar_get_pressed_date(handle, inout d) }
         if (r != LV_RESULT_OK) {
             return None
@@ -798,12 +817,13 @@ public class Calendar <: Widget {
     /** 点击日期回调（点击某日时 LVGL 抛 LV_EVENT_VALUE_CHANGED） */
     public func onPressed(cb: (UInt32, UInt32, UInt32) -> Unit): Unit {
         let selfHandle = handle
-        onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
-            var d = lv_calendar_date_t()
-            let r = unsafe { lv_calendar_get_pressed_date(selfHandle, inout d) }
-            if (r == LV_RESULT_OK) {
-                cb(UInt32(d.year), UInt32(d.month), UInt32(d.day))
-            }
+        onEvent(LV_EVENT_VALUE_CHANGED) {
+            _ =>
+                var d = lv_calendar_date_t() // cjlint-ignore !G.VAR.01 inout 出参必须是可变变量
+                let r = unsafe { lv_calendar_get_pressed_date(selfHandle, inout d) }
+                if (r == LV_RESULT_OK) {
+                    cb(UInt32(d.year), UInt32(d.month), UInt32(d.day))
+                }
         }
     }
 
@@ -834,6 +854,7 @@ public class AnimImage <: Widget {
      * 设置帧序列（至少 2 帧）。
      * @param list       每帧的图像描述符（ImageBuffer.toImageDsc() 的产物）
      * @param durationMs 一整轮播放的时长
+     * @throws[LvglException] 帧数少于 2，或帧指针数组分配失败时
      */
     public func frames(list: Array<ImageDsc>, durationMs!: UInt32 = 1000): Unit {
         if (list.size < 2) {

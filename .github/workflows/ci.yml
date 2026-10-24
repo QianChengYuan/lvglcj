@@ -1,0 +1,151 @@
+# ============================================================
+# lvglcj CI
+# ------------------------------------------------------------
+# 触发：push / PR 到 master，以及手动 workflow_dispatch。
+# 平台：
+#   - Linux x64（ubuntu-24.04）：格式 + 静态检查、编译、单元测试、examples
+#   - Windows x64（windows-2022）：编译、单元测试、examples（MSYS2 UCRT64 依赖）
+# 说明：
+#   - SDK 由 .github/actions/setup-cangjie 通过官方直链安装并校验 SHA-256；
+#   - 格式检查固定在 Linux 上跑（Windows checkout 可能被 autocrlf 改成 CRLF）；
+#   - lib/linux-x64、lib/windows-x64 是提交进仓库的预编译 LVGL 静态库。
+# ============================================================
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: 格式与静态检查
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装仓颉 SDK
+        uses: ./.github/actions/setup-cangjie
+        with:
+          os: linux
+          version: "1.2.0"
+
+      - name: 显示工具链版本
+        run: |
+          cjc -v
+          cjpm -v
+
+      # Ubuntu runner 预装 PowerShell 7，直接复用本地检查脚本，
+      # 保证 CI 与开发机的格式/静态检查判定完全一致。
+      - name: cjfmt + cjlint
+        run: pwsh -NoProfile -File scripts/check.ps1
+
+  linux:
+    name: Linux x64 编译与测试
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LVGLCJ_LIB_DIR: lib/linux-x64
+      # requires_display 用例默认被 exclude-tags 排除；dummy 保证无头环境行为一致。
+      SDL_VIDEODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装仓颉 SDK
+        uses: ./.github/actions/setup-cangjie
+        with:
+          os: linux
+          version: "1.2.0"
+
+      # liblvgl.a 是静态库，带不出 SDL2 / FreeType 依赖，最终链接方必须补。
+      - name: 安装 SDL2 与 FreeType
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsdl2-dev libfreetype-dev
+
+      - name: 校验预编译静态库
+        run: |
+          test -f "$LVGLCJ_LIB_DIR/liblvgl.a"
+          test -f "$LVGLCJ_LIB_DIR/liblvglcjshim.a"
+
+      - name: 编译库
+        run: cjpm build
+
+      - name: 单元测试
+        run: cjpm test
+
+      - name: 编译 examples
+        run: |
+          cd examples
+          cjpm build --cfg
+
+  windows:
+    name: Windows x64 编译与测试
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      LVGLCJ_LIB_DIR: lib/windows-x64
+      SDL_VIDEODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装仓颉 SDK
+        uses: ./.github/actions/setup-cangjie
+        with:
+          os: windows
+          version: "1.2.0"
+
+      # 仓颉在 Windows 上通过 gcc 链接，因此除 SDL2/FreeType 外还要装 UCRT64 工具链。
+      - name: 安装 MSYS2 UCRT64 工具链与依赖
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-freetype
+
+      # liblvgl.a 由 MSYS2 UCRT64 的 gcc 编译，链接与运行时都需要该目录。
+      - name: 验证 MSYS2 UCRT64 工具链
+        shell: pwsh
+        run: |
+          & "C:\msys64\ucrt64\bin\gcc.exe" --version
+
+      - name: 校验预编译静态库
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:LVGLCJ_LIB_DIR\liblvgl.a")) { throw "缺少 liblvgl.a" }
+          if (-not (Test-Path "$env:LVGLCJ_LIB_DIR\liblvglcjshim.a")) { throw "缺少 liblvglcjshim.a" }
+
+      # SDK 的 tools\bin 里有 libwinpthread-1.dll 等运行库，必须让 MSYS2 UCRT64
+      # 排在它前面，否则 SDL2 / FreeType 会加载到不匹配的 DLL。
+      - name: 编译库
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          cjpm build
+
+      - name: 单元测试
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          cjpm test
+
+      - name: 编译 examples
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          cd examples
+          cjpm build --cfg

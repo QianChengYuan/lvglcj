@@ -392,6 +392,26 @@ void lvglcj_freetype_font_delete_cjbindwrapper(lv_font_t * font)
 #endif /* LV_USE_FREETYPE */
 
 /* ------------------------------------------------------------------ */
+/* 字体缺字回退链：本字体没有的字形交给 fallback 继续找                  */
+/*                                                                     */
+/* 典型场景：树莓派的 DroidSansFallbackFull.ttf 只有汉字/假名，没有基本  */
+/* 拉丁字母（U+0021..U+007E），直接拿来当主题字体时 "LVGL 9.5" 会全变方框。*/
+/* LVGL 9.5 的 lv_font_t 自带 fallback 字段，lv_font_get_glyph_dsc 会沿   */
+/* 链逐个尝试（本字体返回的 is_placeholder 会继续往下一级找）。          */
+/* ------------------------------------------------------------------ */
+void lvglcj_font_set_fallback_cjbindwrapper(lv_font_t * font, const lv_font_t * fallback)
+{
+    if(font == NULL) return;
+    font->fallback = fallback;
+}
+
+const lv_font_t * lvglcj_font_get_fallback_cjbindwrapper(const lv_font_t * font)
+{
+    if(font == NULL) return NULL;
+    return font->fallback;
+}
+
+/* ------------------------------------------------------------------ */
 /* 图像文件加载                                                        */
 /*                                                                     */
 /* lv_image_set_src() 用 lv_image_src_get_type() 判断来源：以已注册驱动 */

@@ -106,6 +106,14 @@ lv_font_t * lvglcj_freetype_font_create_cjbindwrapper(const char * pathname, uin
 void        lvglcj_freetype_font_delete_cjbindwrapper(lv_font_t * font);
 
 /* ------------------------------------------------------------------ */
+/* 字体缺字回退链（LVGL 9.5 lv_font_t::fallback）                      */
+/* 例如系统 CJK 字体不含拉丁字形时，缺的字会去 fallback 字体里找。      */
+/* fallback 传 NULL 表示清空回退链。                                    */
+/* ------------------------------------------------------------------ */
+void            lvglcj_font_set_fallback_cjbindwrapper(lv_font_t * font, const lv_font_t * fallback);
+const lv_font_t * lvglcj_font_get_fallback_cjbindwrapper(const lv_font_t * font);
+
+/* ------------------------------------------------------------------ */
 /* 图像文件加载                                                        */
 /* LVGL 的 lv_image_set_src() 只认带驱动器字母的路径（"A:/xxx.png"），   */
 /* 本函数在 C 侧补上前缀，仓颉侧直接传系统路径即可。                     */
