@@ -108,6 +108,7 @@ jobs:
 
       # 仓颉在 Windows 上通过 gcc 链接，因此除 SDL2/FreeType 外还要装 UCRT64 工具链。
       - name: 安装 MSYS2 UCRT64 工具链与依赖
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -117,11 +118,18 @@ jobs:
             mingw-w64-ucrt-x86_64-SDL2
             mingw-w64-ucrt-x86_64-freetype
 
-      # liblvgl.a 由 MSYS2 UCRT64 的 gcc 编译，链接与运行时都需要该目录。
-      - name: 验证 MSYS2 UCRT64 工具链
+      # setup-msys2 的安装位置不固定（例如 D:\a\_temp\setup-msys2\msys64），
+      # 必须使用 action 输出的实际路径；同时把 UCRT64 的 bin 记录给后续步骤。
+      - name: 配置 MSYS2 UCRT64 工具链
         shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs['msys2-location'] }}
         run: |
-          & "C:\msys64\ucrt64\bin\gcc.exe" --version
+          $ucrt = Join-Path $env:MSYS2_LOCATION "ucrt64\bin"
+          $gcc = Join-Path $ucrt "gcc.exe"
+          if (-not (Test-Path $gcc)) { throw "找不到 gcc：$gcc" }
+          & $gcc --version
+          "MSYS2_UCRT64_BIN=$ucrt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: 校验预编译静态库
         shell: pwsh
@@ -134,18 +142,18 @@ jobs:
       - name: 编译库
         shell: pwsh
         run: |
-          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
           cjpm build
 
       - name: 单元测试
         shell: pwsh
         run: |
-          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
           cjpm test
 
       - name: 编译 examples
         shell: pwsh
         run: |
-          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
           cd examples
           cjpm build --cfg
