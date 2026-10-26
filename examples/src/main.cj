@@ -1,5 +1,5 @@
 /**
- * lvglcj 示例：hello / widgets / touch / image / canvas / perf
+ * lvglcj 示例：hello / widgets / touch / image / canvas / perf / rich / file / thread
  *
  * 用法：
  *   ./main hello      # 最小窗口
@@ -8,6 +8,9 @@
  *   ./main image      # RGB565 像素缓冲直出
  *   ./main canvas     # 自绘仪表
  *   ./main perf       # FPS / CPU / 内存
+ *   ./main rich       # 表格/图表/滑块/下拉等高级控件
+ *   ./main file <png> # 从图片文件加载
+ *   ./main thread     # 后台线程 App.post 刷新 UI + 回调异常兜底
  *
  * 后端选择：优先 DRM/KMS（真机），失败回退 SDL 窗口（WSL/桌面）。
  */
@@ -394,9 +397,63 @@ func demoFile(path: String): Unit {
     App.run()
 }
 
+/**
+ * 跨线程刷新 UI：后台线程只 sleep + 算数，所有界面改动经 `App.post` 交回 UI 线程。
+ * 同时演示 `App.onCallbackError`——按钮回调里故意抛异常，进程不会崩、其它交互照常。
+ */
+func demoThread(): Unit {
+    let disp = createDisplay(w: 560, h: 300)
+    let scr = disp.screen()
+
+    // 事件 / 定时器 / post 任务里抛出的异常都会走到这里（默认只打印到控制台）
+    App.onCallbackError {
+        e => println("[lvglcj] 已兜住回调异常：${e.message}")
+    }
+
+    let title = Label(scr)
+    title.text("跨线程刷新（App.post + onCallbackError）")
+    title.align(LV_ALIGN_TOP_MID, dx: 0, dy: 8)
+
+    let bar = Bar(scr)
+    bar.size(480, 18)
+    bar.align(LV_ALIGN_TOP_MID, dx: 0, dy: 42)
+    bar.range(0, 100)
+
+    let readout = Label(scr)
+    readout.text("等待后台线程投递…")
+    readout.align(LV_ALIGN_TOP_MID, dx: 0, dy: 70)
+
+    // 点击就抛异常：验证兜底钩子不会把进程带崩
+    let boom = Button(scr)
+    boom.size(170, 40)
+    boom.align(LV_ALIGN_CENTER, dx: 0, dy: 40)
+    let boomLabel = Label(boom)
+    boomLabel.text("点我抛异常")
+    boomLabel.center()
+    boom.onClick {
+        // 故意抛给 onCallbackError 兜底：这里不是本函数的契约，别写 @throws
+        => throw LvglException("演示用的回调异常") // cjlint-ignore !G.ERR.01 演示用的故意异常
+    }
+
+    // 后台线程：绝不碰 lv_*，只投递任务（post 内部是并发队列，任意线程安全）
+    spawn {
+        for (i in 1..=200) {
+            sleep(Duration.millisecond * 100)
+            let sample = Int32(i % 101)
+            App.post {
+                =>
+                    bar.value(sample)
+                    readout.setTextFmt("已投递 %d 次（后台线程 → UI 线程）", sample)
+            }
+        }
+    }
+
+    App.run()
+}
+
 func usage(): Unit {
     println("用法：main <demo>")
-    println("  hello | widgets | touch | image | canvas | perf | rich")
+    println("  hello | widgets | touch | image | canvas | perf | rich | thread")
     println("  file <png路径>      # 从图片文件加载（Image.fromFile）")
 }
 
@@ -415,6 +472,7 @@ main(args: Array<String>): Unit {
         case "canvas" => demoCanvas()
         case "perf" => demoPerf()
         case "rich" => demoRich()
+        case "thread" => demoThread()
         case "file" =>
             if (args.size < 2) {
                 println("用法：main file <png路径>")

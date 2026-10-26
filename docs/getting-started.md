@@ -116,7 +116,7 @@ cjpm build --cfg
 
 看到窗口、中文正常、点按钮数字会加，就算跑通了。
 
-## 5. 直接跑仓库自带的八个示例
+## 5. 直接跑仓库自带的九个示例
 
 不想自己写代码，就先看示例：
 
@@ -132,6 +132,7 @@ cjpm build --cfg
 ./target/release/bin/main perf              # FPS / CPU / 内存
 ./target/release/bin/main rich              # 富文本 / 日历 / 帧动画（SpanGroup、Calendar、AnimImage）
 ./target/release/bin/main file logo.png     # 从 PNG 文件加载（Image.fromFile）
+./target/release/bin/main thread            # 后台线程 App.post 刷 UI + 回调异常兜底
 ```
 
 示例源码都在 `examples/src/main.cj`，是学习 API 最快的入口。

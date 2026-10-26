@@ -342,6 +342,31 @@ main() { ... }        // ✅
 public func main()    // ❌
 ```
 
+### G6. 回调里抛异常会不会把进程带崩？
+
+库已经在 C 边界统一兜底：`onEvent`、`Timer`、`App.post` 任务里的 `Exception` 不会跨语言传播。默认打印到控制台；想看日志/弹错误页就注册处理器：
+
+```cangjie
+App.onCallbackError {e =>
+    println("UI 回调失败：${e.message}")
+}
+```
+
+处理器本身仍在主线程执行，别再抛异常或做阻塞 IO。未注册时只打印，不会 abort。
+
+### G7. `ambiguous use of 'Timer'`（同时导入 `std.sync.*`）
+
+`std.sync` 也有一个 `Timer`。两个包都通配导入时，写 `Timer.every` 会歧义。用库提供的无冲突别名：
+
+```cangjie
+import lvglcj.*
+import std.sync.*
+
+LvglTimer.every(1000) { ... }    // ✅ 等价于 lvglcj.Timer
+```
+
+或者只导入需要的符号，避免 `std.sync.*` 通配。
+
 ---
 
 ## G'. 单元测试相关

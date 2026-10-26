@@ -22,6 +22,8 @@ import std.unittest.testmacro.*
 class WidgetTests {
     static var disp: Option<Display> = None
     static var scr: Option<Screen> = None
+    static var eventCount: Int32 = 0
+    static var eventError: String = ""
 
     @BeforeAll
     static func setupDisplay() {
@@ -101,15 +103,67 @@ class WidgetTests {
         btn.finalize()
     }
 
-    /** 事件订阅与注销路径不能崩（真实点击需要人工验证） */
+    /** 事件订阅、手动触发、取消与对象删除后的自动失效 */
     @Tag[requires_display]
     @TestCase
-    func testEventSubscriptionIsSafe() {
+    func testEventSubscriptionLifecycle() {
+        eventCount = 0
         let btn = Button(screen())
-        btn.onClick {}
-        btn.onEvent(LV_EVENT_ALL) {e => let _ = e.code()}
+        let sub = btn.onEvent(LV_EVENT_CLICKED) {_ => eventCount += 1}
+        @Expect(sub.isActive(), true)
+
+        btn.sendEvent(LV_EVENT_CLICKED)
+        @Expect(eventCount, 1)
+
+        sub.cancel()
+        sub.cancel()
+        @Expect(sub.isActive(), false)
+        btn.sendEvent(LV_EVENT_CLICKED)
+        @Expect(eventCount, 1)
+
+        let sub2 = btn.onEvent(LV_EVENT_CLICKED) {_ => eventCount += 1}
         btn.finalize()
-        @Expect(true)
+        @Expect(sub2.isActive(), false)
+        @Expect(btn.isDeleted(), true)
+        // 幂等：重复 finalize 不能再碰已释放的 C 指针
+        btn.finalize()
+        @Expect(eventCount, 1)
+    }
+
+    /** 控件回调抛异常时交给 App.onCallbackError，不跨 C 边界传播 */
+    @Tag[requires_display]
+    @TestCase
+    func testEventCallbackErrorIsReported() {
+        eventError = ""
+        App.onCallbackError {e => eventError = e.message}
+        let btn = Button(screen())
+        let sub = btn.onEvent(LV_EVENT_CLICKED) {
+            _ => throw LvglException("event boom")
+        }
+        btn.sendEvent(LV_EVENT_CLICKED)
+        App.clearCallbackErrorHandler()
+        sub.cancel()
+        btn.finalize()
+        @Expect(eventError, "event boom")
+    }
+
+    /** Event.target() 是借用视图，调用 finalize() 必须被拒绝 */
+    @Tag[requires_display]
+    @TestCase
+    func testEventTargetIsBorrowedView() {
+        eventError = ""
+        let btn = Button(screen())
+        let sub = btn.onEvent(LV_EVENT_CLICKED) {
+            e => try {
+                e.target().finalize()
+            } catch (err: LvglException) {
+                eventError = err.message
+            }
+        }
+        btn.sendEvent(LV_EVENT_CLICKED)
+        sub.cancel()
+        btn.finalize()
+        @Expect(eventError, "该 Widget 是借用视图，不能释放")
     }
 
     /** Canvas 绘制 API 全部走通（RGB565 缓冲 + 中文文本） */

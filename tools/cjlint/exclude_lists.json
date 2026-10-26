@@ -1,7 +1,9 @@
 {
     "FFI.C.7": [
         {"path": "widget.cj", "line": "487"},
-        {"path": "widget.cj", "line": "870"}
+        {"path": "widget.cj", "line": "689"},
+        {"path": "widget.cj", "line": "870"},
+        {"path": "widget.cj", "line": "1072"}
     ],
     "G.FUN.01": [
         {"path": "ffi_draw.cj", "line": "76"},
@@ -23,6 +25,7 @@
         {"path": "widget_test.cj", "line": "21"}
     ],
     "G.NAM.01": [
+        {"path": "app_test.cj", "line": "6"},
         {"path": "color_test.cj", "line": "7"},
         {"path": "constants_test.cj", "line": "9"},
         {"path": "image_buffer_test.cj", "line": "9"},
@@ -32,6 +35,7 @@
         {"path": "widget_test.cj", "line": "12"}
     ],
     "G.NAM.03": [
+        {"path": "app_test.cj", "line": "12"},
         {"path": "color_test.cj", "line": "14"},
         {"path": "constants_test.cj", "line": "16"},
         {"path": "ffi_structs.cj", "line": "21"},
@@ -64,6 +68,9 @@
     "G.PKG.01": [
         {"path": "app.cj", "line": "9"},
         {"path": "app.cj", "line": "10"},
+        {"path": "app.cj", "line": "11"},
+        {"path": "app_test.cj", "line": "8"},
+        {"path": "app_test.cj", "line": "9"},
         {"path": "color_test.cj", "line": "9"},
         {"path": "color_test.cj", "line": "10"},
         {"path": "color_test.cj", "line": "11"},
@@ -94,10 +101,15 @@
     ],
     "G.VAR.02": [
         {"path": "app.cj", "line": "14"},
+        {"path": "app.cj", "line": "15"},
         {"path": "app.cj", "line": "38"},
         {"path": "app.cj", "line": "39"},
         {"path": "app.cj", "line": "40"},
+        {"path": "app.cj", "line": "41"},
         {"path": "app.cj", "line": "65"},
+        {"path": "app.cj", "line": "67"},
+        {"path": "app.cj", "line": "74"},
+        {"path": "app.cj", "line": "263"},
         {"path": "image_buffer_test.cj", "line": "16"},
         {"path": "image.cj", "line": "71"},
         {"path": "style.cj", "line": "112"},
@@ -107,9 +119,14 @@
         {"path": "widget_test.cj", "line": "21"},
         {"path": "widget.cj", "line": "35"},
         {"path": "widget.cj", "line": "37"},
+        {"path": "widget.cj", "line": "77"},
+        {"path": "widget.cj", "line": "95"},
         {"path": "widget.cj", "line": "586"},
+        {"path": "widget.cj", "line": "788"},
         {"path": "widget.cj", "line": "790"},
-        {"path": "widget.cj", "line": "868"}
+        {"path": "widget.cj", "line": "868"},
+        {"path": "widget.cj", "line": "992"},
+        {"path": "widget.cj", "line": "1070"}
     ]
 }
 

@@ -126,7 +126,7 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 
 **线程模型硬约束**：LVGL **不是线程安全的**，所有 `lv_*` 调用必须在同一个线程内完成。仓颉侧约定——主线程持有 LVGL：
 - `lv_timer_handler()` 只由主线程调用；
-- 业务线程（网络、采集、日志）不得直接触碰 `lv_obj_*`，统一投递到主线程的任务队列；
+- 业务线程（网络、采集、日志）不得直接触碰 `lv_obj_*`，统一用 `App.post { ... }` 投递到主线程任务队列；
 - flush 回调内禁止做仓颉侧的重量级分配（GC 停顿会直接体现在掉帧上）。
 
 ### 4. 友好 API 层（包 `lvglcj`）能力清单
@@ -134,20 +134,22 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | 能力 | 入口 | 说明 |
 |---|---|---|
 | 版本信息 | `version()` | 返回 LVGL 主/次/补丁版本号文本 |
-| **主循环** | `App.run(...)` | 封装 `lv_init` → 显示/输入创建 → `lv_timer_handler` 循环 + 优雅退出；`tick` 自动用 `lv_tick_set_cb` 挂接单调时钟（缺了这步画面会「第一帧后卡死」） |
+| **主循环** | `App.run(...)` / `App.runOnce()` | 封装 `lv_init` → 显示/输入创建 → `lv_timer_handler` 循环 + 优雅退出；`tick` 自动用 `lv_tick_set_cb` 挂接单调时钟（缺了这步画面会「第一帧后卡死」） |
+| **UI 线程调度** | `App.post(task)` | 任意线程安全入队，下一轮主循环在 UI 线程执行；每轮最多 256 个任务 |
 | **显示后端** | `Display.drm(card)` / `Display.fbdev(dev)` / `Display.sdl(w,h)` | 三个后端同一接口；自动读取设备真实分辨率与色深，无需手填 |
 | 显示调优 | `Display.setRotation/setColorFormat/setRenderMode/setForceRefresh` | 旋转（软旋转）、色深切换、partial/direct/full 模式、整屏强制刷新 |
 | **输入** | `Input.evdev(type, dev)` / `Input.discover()` | 触摸/鼠标/键盘；`calibrate(minX,minY,maxX,maxY)`、`swapAxes(true)` 修正坐标错位 |
-| 控件构建 | `Label` / `Button` / `Image` / `Slider` / `Arc` / `Bar` / `Switch` / `Checkbox` / `Dropdown` / `Roller` / `TextArea` / `Keyboard` / `List` / `Table` / `TabView` / `Menu` / `MsgBox` / `Chart` / `Canvas` / `Win` / **`SpanGroup`（富文本混排）** / **`Calendar`** / **`AnimImage`（帧动画）** / **`ImePinyin`（拼音输入法）** | 每个控件一个仓颉 class，链式调用，内部只持 `lv_obj_t` 句柄；`finalize()` 统一析构 |
+| 控件构建 | `Label` / `Button` / `Image` / `Slider` / `Arc` / `Bar` / `Switch` / `Checkbox` / `Dropdown` / `Roller` / `TextArea` / `Keyboard` / `List` / `Table` / `TabView` / `Menu` / `MsgBox` / `Chart` / `Canvas` / `Win` / **`SpanGroup`（富文本混排）** / **`Calendar`** / **`AnimImage`（帧动画）** / **`ImePinyin`（拼音输入法）** | 每个控件一个仓颉 class，链式调用，内部只持 `lv_obj_t` 句柄；`finalize()` 同步删除、`delete()` 异步删除，均幂等 |
+| 事件 | `Widget.onEvent(mask, cb)` | 返回 `EventSubscription`，可 `cancel()`；控件删除时自动回收订阅；`Button.onClick`、`Switch/Checkbox.onChanged`、`Slider.onValueChanged` 提供带类型的快捷订阅 |
 | 样式 | `Style()` | `bgColor/bgOpa/radius/border/pad/textFont/textColor/shadow` 等链式设置，`applyTo(obj, part)`；9.5 原生阴影/模糊可直接用 |
 | **像素/图像** | `ImageBuffer(w, h, cf)` | 申请并持有一块 LVGL 可直接消费的像素缓冲；`toImageDsc()` 生成 `lv_image_dsc_t`（自动填 `magic`/`cf`/`w`/`h`/`stride`/`data_size`）；`writePixels(bytes)` 从仓颉 `Array<UInt8>` 拷入 |
 | **图片文件** | `Image.fromFile(parent, path)` | PNG（内置 lodepng + STDIO 文件系统），C 垫片负责补 `A:` 驱动器前缀；路径不存在抛 `LvglException` |
 | 色彩工具 | `Color.rgb565(r,g,b)` / `Color.argb8888(...)` | 产出与目标 `LV_COLOR_FORMAT` 匹配的字面量，避免手写移位出错 |
 | 画布 | `Canvas(w,h)` | `fillBg` / `drawRect` / `drawText` / `setPx`，适合自绘仪表、波形、图表 |
-| 定时器 | `Timer.every(ms, cb)` | 仓颉闭包注册到 LVGL 定时器（cb 运行在主线程，可直接操作控件） |
+| 定时器 | `Timer.every(ms, cb)` / `Timer.once(ms, cb)` | 返回 `TimerHandle`：`cancel/pause/resume/ready/setPeriod`；cb 运行在主线程，可直接操作控件；一次性定时器触发后自动失效 |
 | 主题 | `Theme.default(primary, secondary, dark, font)` | 一行切换全局主题与深色模式 |
 | 诊断 | `Perf.fps()` / `Mem.monitor()` | 读取 FPS/CPU 占用与内存碎片，配合 `LV_USE_PERF_MONITOR` |
-| 错误处理 | 全部抛 `Exception` | LVGL 9 的参数校验断言族（`LV_USE_ASSERT_NULL`/`LV_USE_ASSERT_MALLOC` 默认开启，`LV_USE_ASSERT_OBJ` 等可按需在 `lv_conf.h` 打开），本层把返回的 `LV_RESULT_INVALID` 转为异常 |
+| 错误处理 | 全部抛 `Exception` / `App.onCallbackError` | LVGL 9 的参数校验断言族（`LV_USE_ASSERT_NULL`/`LV_USE_ASSERT_MALLOC` 默认开启，`LV_USE_ASSERT_OBJ` 等可按需在 `lv_conf.h` 打开），本层把返回的 `LV_RESULT_INVALID` 转为异常；事件/定时器/post 任务中的回调异常统一兜底，可注册处理器 |
 
 ### 5. 平台支持矩阵（开发机 vs 真机）
 
@@ -156,7 +158,7 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | LVGL 版本 | 9.5.0 | 9.5.0 | 9.5.0（同一份源码） |
 | 显示后端 | **SDL2**（原生窗口） | **SDL2**（WSLg 窗口） | **DRM/KMS** 优先，fbdev 兼容 |
 | 输入后端 | SDL 指针/键盘；evdev 经垫片降级为不可用 | SDL 指针 / evdev | **evdev**（`/dev/input/eventX`） |
-| 中文字体 | FreeType + 系统雅黑（`msyh.ttc`） | FreeType + Noto CJK | 内置思源黑体子集（可另开 FreeType） |
+| 中文字体 | FreeType + 系统雅黑（`msyh.ttc`） | FreeType + Noto CJK | FreeType + `DroidSansFallbackFull.ttf`（该字体无拉丁字形，需 `Font.setFallback(Montserrat)` 补 ASCII）；内置思源黑体子集作兜底 |
 | 链接形式 | `-lSDL2 -lfreetype` 动态 + LVGL 静态 | 同左 | LVGL 静态 + 仓颉运行时静态，产物单文件 |
 | 构建命令 | `./scripts/build-lvgl-sdl.ps1` + `cjpm build --cfg` | `scripts/build-lvgl-sdl.sh` + `cjpm build --cfg` | `cjpm build`（交叉）或 Pi 上 `cjpm build`（原生） |
 | 源码 / `cjpm.toml` | 同一份（用 `@When[os == "Linux" && arch == "aarch64"]` 做条件编译分流） | 同一份 | 同一份 |
@@ -168,7 +170,7 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 |---|---|
 | **视频播放** | ❌ v1 不做。路线：v1.1 接 LVGL 的 GStreamer 源（9.5 已支持无音轨源，可直接吃摄像头）；或走 v4l2m2m 硬解 → `ImageBuffer` → `lv_image` |
 | 硬件加速渲染（OpenGL ES / EGL，VC4 支持 GLES2） | v2。v1 为纯 CPU 软渲染（已开 NEON） |
-| 中文字体方案 | v1 只带 Montserrat 内置字体；中文走 Freetype + 字模子集化，v1.1 |
+| 中文字体方案 | ✅ v1 已支持：`Font.systemCjk()` / `trySystemCjk()` 经 FreeType 加载系统 TTF/TTC，缺字用 `setFallback` 挂回退；内置思源黑体子集（1338 字）只作兜底 |
 | SquareLine Studio / EEZ Studio 导出 UI 接入 | v2（导出 C → 由垫片层接入） |
 | LVGL XML UI | 官方已把 XML 引擎移出主仓库，不跟进 |
 | 多屏 / 多窗口 | v2 |
@@ -364,7 +366,7 @@ lvglcj/
 ├── docs/                      # 使用文档（快速开始 / 编译指南 / API / FAQ）
 ├── .build/                    # LVGL 构建中间目录（.gitignore，可删）
 ├── examples/                  # 独立示例工程（path 依赖引用本库）
-│   └── src/main.cj            # hello / widgets / touch / image / canvas / perf / rich / file 八个演示
+│   └── src/main.cj            # hello / widgets / touch / image / canvas / perf / rich / file / thread 九个演示
 └── target/                    # cjpm 构建产物（.gitignore）
 ```
 
@@ -391,18 +393,18 @@ lvglcj/
 | 4 | 结构体偏移表 | `.cache/lvgl_offsets.c` 用交叉 gcc 对 9.5 头文件实测 offsetof，写入 `src/ffi_structs.cj`（`lv_area_t`/`lv_point_t`/`lv_image_header_t`/`lv_image_dsc_t`/`lv_indev_data_t`/`lv_mem_monitor_t`） | ✅ |
 | 5 | FFI 声明层 | `ffi_core.cj`（init/tick/timer）→ `ffi_display.cj` → `ffi_indev.cj` → `ffi_obj.cj` → `ffi_widgets.cj` → `ffi_draw.cj`，每个宏/inline 配 `_cjbindwrapper` | ✅ |
 | 6 | 友好 API 层 | `util.cj` → `app.cj`（主循环/tick）→ `display.cj` → `input.cj` → `widget.cj` → `style.cj` → `image.cj`；`ImageBuffer.toImageDsc()` 是喂像素给 LVGL 的核心 | ✅ |
-| 7 | 示例项目 | `examples/`：①hello ②widgets ③touch ④image（RGB565 直出）⑤canvas（自绘仪表）⑥perf（FPS/内存）⑦rich（富文本 / 日历 / 帧动画）⑧file（`Image.fromFile` 加载 PNG） | ✅ |
-| 8 | 本机 SDL 验证 | Windows：六示例全部真实弹窗（LVGL Simulator + SDL 鼠标键盘）；WSL（Ubuntu 24.04 + WSLg）：六示例全部正常运行，窗口截图确认中文正常渲染 | ✅ Windows + WSL |
-| 9 | **真机联调（Pi Zero 2 W）** | DRM 后端出图 + evdev 触摸校准 + 实测 FPS / 内存 / CPU；确定 `LV_DEF_REFR_PERIOD` 与 buffer 行数。**前置**：需要 linux-aarch64 版仓颉 SDK 才能产出 aarch64 可执行文件 | ⏳ |
-| 10 | 文档与发布 | README 收尾、API 参考补全、Gitcode 发布 | ⏳ |
+| 7 | 示例项目 | `examples/`：①hello ②widgets ③touch ④image（RGB565 直出）⑤canvas（自绘仪表）⑥perf（FPS/内存）⑦rich（富文本 / 日历 / 帧动画）⑧file（`Image.fromFile` 加载 PNG）⑨thread（`App.post` 跨线程刷 UI + 回调异常兜底） | ✅ |
+| 8 | 本机 SDL 验证 | Windows：九示例全部真实弹窗（LVGL Simulator + SDL 鼠标键盘）；WSL（Ubuntu 24.04 + WSLg）：编译通过，窗口用例受 WSLg 限制跳到真机/Windows 验证 | ✅ Windows + WSL |
+| 9 | **真机联调（Pi Zero 2 W）** | SDL 后端在 Pi 桌面（labwc/Wayland）出图 + grim 截图确认中文/数字/自绘均正常；`Display.drm()` 直连未验证（桌面占着 DRM master，需切到 console 跑）；evdev 触摸校准待现场调 | 🟡 已跑通图形，DRM/触摸待验 |
+| 10 | 文档与发布 | README 收尾、API 参考补全、Gitcode 发布 | 🟡 文档已成体系，发布待做 |
 
 > 状态说明：步骤 1–8 已完成并双平台实测：
-> - **Windows + MSYS2 UCRT64**：`./scripts/build-lvgl-sdl.ps1` → `lib/windows-x64/`；`cjpm build` 与 `examples` 的 `cjpm build --cfg` 均 0 error / 0 warning；八个示例逐一弹窗。
-> - **WSL（Ubuntu-dev）+ WSLg**：`scripts/build-lvgl-sdl.sh` → `lib/linux-x64/`；`cjpm build` / `cjpm build --cfg` 编译通过；40 个用例（含 11 个 `requires_display` 窗口用例）全部 passed。
->   > 本机 WSLg 的 Xwayland 报 `your 131072x1 screen size is bogus`，窗口投不到 Windows 桌面，因此 WSL 侧只做**无窗口验证**（控件真实创建、日历日期读写、帧动画帧数组与播放路径均已覆盖），视觉确认以 Windows 截图为准。
+> - **Windows + MSYS2 UCRT64**：`./scripts/build-lvgl-sdl.ps1` → `lib/windows-x64/`；`cjpm build` 与 `examples` 的 `cjpm build --cfg` 均 0 error；九个示例逐一弹窗。
+> - **WSL（Ubuntu-dev）+ WSLg**：`scripts/build-lvgl-sdl.sh` → `lib/linux-x64/`；`cjpm build` / `cjpm build --cfg` 编译通过。
+> - **单测**：`cjpm test` 共 49 个用例（36 通过 + 13 个 `requires_display` 窗口用例跳过），0 失败。
+>   > 本机 WSLg 的 Xwayland 报 `your 131072x1 screen size is bogus`，窗口投不到 Windows 桌面，因此 WSL 侧只做**无窗口验证**（控件真实创建、日历日期读写、帧动画帧数组与播放路径均已覆盖），视觉确认以 Windows 截图与 Pi 真机截图为准。
 > - **交叉编译**：`scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`，`readelf` 校验 `ELF64 / Machine: AArch64`，DRM/evdev 符号已编入。
->
-> 步骤 9、10 待执行；`lib/linux-arm64/` 的 C 库已验证是 aarch64，但**仓颉侧 aarch64 产物尚未生成**（缺 aarch64 SDK），真机联调前请勿当作已跑通。
+> - **仓颉侧 aarch64 产物不需要单独的 aarch64 SDK**：用本机 linux-x64 的 cjc，`cjpm.toml` 里配 `--target aarch64-unknown-linux-gnu --sysroot /usr/aarch64-linux-gnu --static`，静态链接后 scp 到 Pi 直接运行（约 7 MB，不依赖目标机上的仓颉运行时）。
 
 ---
 
@@ -554,8 +556,8 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（两个平台一致）：**40 个用例，29 passed / 11 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **11 个窗口用例全部 passed**（Windows 与 WSL 均已实跑）。
+实测结果（Windows，2026-10）：**49 个用例，36 passed / 13 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **13 个窗口用例全部 passed**（会短暂弹出 320×240 的 LVGL 窗口）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
 |---|---|---|
@@ -564,7 +566,8 @@ cjpm test
 | `color_test.cj` | `Color.rgb565` / `argb8888` 位运算边界 | 否 |
 | `image_buffer_test.cj` | 每像素字节数推导、`writePixels` 长度校验、`toImageDsc` | 否 |
 | `style_test.cj` | `Style` 链式、`Font` 工厂与 `close()` 语义 | 需 lv_init |
-| `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile** | **是**，打 `@Tag[requires_display]` |
+| `app_test.cj` | `App.post`（含跨线程）、回调异常处理、`TimerHandle` 的 ready/cancel/一次性失效 | 否 |
+| `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile** | **是**，打 `@Tag[requires_display]` |
 
 需要真实屏幕的用例默认被 `[profile.test].exclude-tags` 排除（无头环境开不了 SDL 窗口）。注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：
 
@@ -641,8 +644,10 @@ lvglcj = { path = ".." }
 | `App.setup()` | `lv_init()` + 挂接单调时钟（`lv_tick_set_cb`）（没有 `App.init()`） |
 | `App.mainDisplay(): Display` | 取默认 display |
 | `App.run(idleMs)` | 主循环：`lv_timer_handler()` + `lv_sleep_ms()` 到进程退出 |
-| `App.runOnce(): UInt32` | 手动泵一次，返回距下次定时器的毫秒数（便于与业务线程协作） |
-| `Timer.every(ms, cb)` / `Timer.once(ms, cb)` | 仓颉闭包注册 LVGL 定时器；cb 在主线程执行，可直接改控件 |
+| `App.runOnce(): UInt32` | 先执行 `App.post` 任务，再手动泵一次；返回距下次定时器的毫秒数 |
+| `App.post(task)` | 任意线程安全投递 UI 任务，下一轮主循环在 UI 线程执行 |
+| `App.onCallbackError(handler)` / `clearCallbackErrorHandler()` | 事件/定时器/post 任务异常兜底钩子 |
+| `Timer.every(ms, cb)` / `Timer.once(ms, cb)`（别名 `LvglTimer`） | 返回 `TimerHandle`（`cancel/pause/resume/ready/setPeriod`）；cb 在主线程执行，可直接改控件；同时导入 `std.sync.*` 时用 `LvglTimer` 避免重名 |
 | `App.shutdown()` | `lv_deinit()` 与资源回收（没有 `App.deinit()`） |
 
 ### display.cj — 显示
@@ -681,7 +686,7 @@ lvglcj = { path = ".." }
 | `Container(parent)` | 基础容器（对应 `lv_obj_create`，没有 `Widget.create()`）；`size(w,h)` / `pos(x,y)` / `align(ALIGN, dx, dy)` / `center()` |
 | `Widget.setFont(f, part!)` | 所有控件（含 `Screen`）都有；`text_font` 可继承，设在 Screen/容器上即对该子树生效 |
 | `Label(parent)` → `text(s)` / `setTextFmt(fmt, ...)` / `color(c)` | 文本 |
-| `Button(parent)` → `onClick(cb)` / `checkable()` | 按钮，事件回调为仓颉闭包 |
+| `Button(parent)` → `onClick(cb)` / `checkable()` | 按钮；`onClick`/`onChanged`/`onValueChanged` 返回可取消的 `EventSubscription` |
 | `Image(parent)` → `setSource(dsc)` / `rotate(deg)` / `scale(x)` | 图像 |
 | `Slider / Arc / Bar / Switch / Checkbox / Dropdown / Roller / TextArea / Keyboard / List / Table / TabView / Menu / MsgBox / Chart / Canvas / Win` | 常用控件，逐个封装常用 setter |
 | `SpanGroup(parent)` → `add("文本").style(st)` | 富文本混排：一段文字里不同颜色/字号。`mode()` 定宽/撑开/换行，`textAlign()`、`overflow()`、`maxLines()` |
@@ -689,8 +694,8 @@ lvglcj = { path = ".." }
 | `AnimImage(parent)` | 帧动画：`frames(Array<ImageDsc>, durationMs!)` + `start()` + `repeatCount(n)`；帧数组与 dsc 由类内保活 |
 | `ImePinyin(parent)` | 拼音输入法：`bindKeyboard(kb)` + `mode(LV_IME_PINYIN_MODE_*)`，需 `LV_USE_IME_PINYIN=1` |
 | `addFlag(f)` / `removeFlag(f)` / `addState(s)` / `removeState(s)` | 标志与状态（hidden / clickable / checked / disabled …） |
-| `onEvent(mask, cb)` | 通用事件订阅 |
-| `finalize()` / `delete()` | 释放 |
+| `onEvent(mask, cb): EventSubscription` / `offEvent(sub)` / `sendEvent(code)` | 通用事件订阅、取消与主动触发；控件删除时订阅自动失效 |
+| `finalize()` / `delete()` / `isDeleted()` | 同步释放 / 异步释放（均幂等）/ 删除状态；借用视图调用前两者会抛异常 |
 
 ### style.cj — 样式与主题
 
@@ -772,7 +777,9 @@ lvglcj = { path = ".." }
 | `freetype already initialized` | `lv_init()` 已内部调用 `lv_freetype_init()`，不要重复初始化 |
 | `gcc: No such file or directory`（Windows 下路径明明存在） | 把 Windows 反斜杠路径传给 MSYS2 的 gcc/cmake 会被当转义符 → 统一用正斜杠 |
 | MinGW 链接全错 | 用了 32 位 `mingw32` 或 `clang64` 的库，与 cjc 目标 `x86_64-w64-mingw32` 不匹配 → 只认 `ucrt64` |
-| UI 偶发错乱 / 崩溃 | 有线程在非主线程调 `lv_*`；统一收敛到主线程 |
+| UI 偶发错乱 / 崩溃 | 有线程在非主线程调 `lv_*`；统一用 `App.post { ... }` 收敛到主线程 |
+| 回调异常后界面无响应 | 已注册 `App.onCallbackError` 但处理器内部又阻塞/抛错；处理器只做轻量日志或状态切换 |
+| 事件越订越多 / 控件删了还收到回调 | 用 `onEvent` 返回的 `EventSubscription.cancel()` 显式取消，或依赖控件删除时的自动回收；不要反复给同一控件注册无句柄的回调 |
 | WSL 里跑不起来 | WSL2 无 `/dev/dri`、无 `/dev/fb0` → 用 SDL 后端 + WSLg 验证 |
 | 想看实时开销 | 开 `LV_USE_SYSMON` + `LV_USE_PERF_MONITOR` + `LV_USE_MEM_MONITOR`，跑 `./main perf` |
 | `can not find the library 'lvgl' which is listed in 'ffi.c' field` | 没设 `LVGLCJ_LIB_DIR`（或设错平台目录）；cjpm 不支持 `${VAR:-默认值}`，必须显式设置 |

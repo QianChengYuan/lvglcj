@@ -7,6 +7,7 @@
 package lvglcj
 
 import std.collection.*
+import std.collection.concurrent.*
 import std.time.*
 
 /* ==================== tick 源 ==================== */
@@ -60,6 +61,14 @@ private func perfSample(busyMs: Int64): Unit {
     }
 }
 
+/* ==================== UI 线程调度 ==================== */
+
+// 任意线程都可以 post；任务只在 UI 线程的 runOnce 中执行。
+private let UI_TASKS: ConcurrentLinkedQueue<() -> Unit> = ConcurrentLinkedQueue<() -> Unit>()
+
+// 回调异常处理器：事件、定时器、post 任务共用同一条兜底路径。
+private var callbackErrorHandler: Option<(Exception) -> Unit> = None // cjlint-ignore !G.VAR.02 UI 线程全局错误钩子
+
 /* ==================== App ==================== */
 
 private var running: Bool = false
@@ -89,26 +98,98 @@ public class App {
     }
 
     /**
+     * 从任意线程投递 UI 任务。任务只会在调用 App.run()/App.runOnce() 的
+     * UI 线程执行，因此可以安全地更新控件。任务内不要阻塞。
+     */
+    public static func post(task: () -> Unit): Unit {
+        UI_TASKS.add(task)
+    }
+
+    /**
+     * 注册回调异常处理器。事件、定时器和 post 任务里抛出的异常都会交给它，
+     * 不会跨 C 边界传播导致进程 abort。handler 自身抛错时只打印，不再向外抛。
+     */
+    public static func onCallbackError(handler: (Exception) -> Unit): Unit {
+        callbackErrorHandler = Some(handler)
+    }
+
+    /** 清除回调异常处理器，恢复默认的控制台输出 */
+    public static func clearCallbackErrorHandler(): Unit {
+        callbackErrorHandler = None
+    }
+
+    internal static func reportCallbackError(e: Exception): Unit {
+        match (callbackErrorHandler) {
+            case Some(handler) => try {
+                handler(e)
+            } catch (handlerError: Exception) {
+                println("[lvglcj] 回调异常处理器自身抛错：${handlerError.message}；原始异常：${e.message}")
+            }
+            case None => println("[lvglcj] 回调异常：${e.message}")
+        }
+    }
+
+    /**
      * 主循环：lv_timer_handler + lv_sleep_ms，直到 App.stop()。
      * @param idleMs 每轮空闲休眠毫秒数（默认 5）
      */
     public static func run(idleMs!: UInt32 = 5): Unit {
         running = true
+        var rounds: Int64 = 0
+        var maxCost: Int64 = 0
+        var windowStart = MonoTime.now()
         while (running) {
+            let t0 = MonoTime.now()
             runOnce()
-            unsafe { lv_sleep_ms(idleMs) }
+            let cost = (MonoTime.now() - t0).toMilliseconds()
+            if (cost > maxCost) {
+                maxCost = cost
+            }
+            rounds += 1
+            let win = (MonoTime.now() - windowStart).toMilliseconds()
+            if (win >= 2000) {
+                // 诊断：sleep 生效时约 400 轮/2s（1000/(5+渲染耗时) × 2）。
+                // 轮次远高于此说明休眠没起作用；maxCost 大说明某轮卡住了。
+                println("[lvglcj] 2s ${rounds} 轮，最慢一轮 ${maxCost}ms")
+                rounds = 0
+                maxCost = 0
+                windowStart = MonoTime.now()
+            }
+            // 不用 lv_sleep_ms：当构建里 LV_USE_OS == LV_OS_NONE 时它退化成
+            // lv_delay_ms 的**忙等**（while 轮询 tick），主线程会白烧一个核。
+            // 在 Pi 上实测主线程常驻 90% CPU，直接抢走音频解码的调度时间，
+            // 表现就是声音断续 + 界面点不动。改用仓颉自己的 sleep，必定让出 CPU。
+            sleep(Duration.millisecond * Int64(idleMs))
         }
     }
 
     /**
-     * 手动泵一次：lv_timer_handler + 性能采样。
+     * 手动泵一次：先执行 post 任务，再跑 lv_timer_handler 与性能采样。
      * @return 距下次定时器的毫秒数（便于与业务线程协作）
      */
     public static func runOnce(): UInt32 {
+        drainPostedTasks()
         let t0 = MonoTime.now()
         let idle = unsafe { lv_timer_handler() }
         perfSample((MonoTime.now() - t0).toMilliseconds())
         idle
+    }
+
+    // 每帧最多执行 256 个任务，避免业务线程无限投递时卡死渲染循环。
+    private static func drainPostedTasks(): Unit {
+        var count: Int64 = 0
+        while (count < 256) {
+            match (UI_TASKS.remove()) {
+                case Some(task) =>
+                    try {
+                        task()
+                    } catch (e: Exception) {
+                        App.reportCallbackError(e)
+                    }
+                    count += 1
+                case None => break
+            }
+        }
     }
 }
 
@@ -156,10 +237,11 @@ public class Perf {
 
 /* ==================== Timer ==================== */
 
-private class TimerEntry {
+internal class TimerEntry {
     var handle: CPointer<lv_timer_t>
     let cb: () -> Unit
     let repeat: Bool
+    var active: Bool = true
 
     init(handle: CPointer<lv_timer_t>, cb: () -> Unit, repeat: Bool) {
         this.handle = handle
@@ -170,32 +252,111 @@ private class TimerEntry {
 
 // 定时器注册表必须是模块级：C 侧只认静态分发函数，闭包状态不能跟着对象走。
 private let TIMER_ENTRIES: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
+private var timerDispatchDepth: Int64 = 0 // cjlint-ignore !G.VAR.02 定时器回调重入计数
+
+private func removeTimerEntry(entry: TimerEntry): Unit {
+    var i: Int64 = 0
+    while (i < TIMER_ENTRIES.size) {
+        if (TIMER_ENTRIES[i].handle.toUIntNative() == entry.handle.toUIntNative()) {
+            TIMER_ENTRIES.remove(at: i)
+            return
+        }
+        i += 1
+    }
+}
+
+private func compactTimers(): Unit {
+    var i: Int64 = 0
+    while (i < TIMER_ENTRIES.size) {
+        if (!TIMER_ENTRIES[i].active) {
+            TIMER_ENTRIES.remove(at: i)
+        } else {
+            i += 1
+        }
+    }
+}
 
 /**
  * LVGL 定时器分发器：C 侧只见这个静态函数，仓颉闭包查注册表执行。
- * 注意：闭包内抛出的异常不能跨 C 边界传播，回调代码须自行兜底。
+ * 回调异常在这里捕获，不能跨 C 边界传播。
  */
 @C
 func cjTimerDispatch(timer: CPointer<lv_timer_t>): Unit {
     let addr = timer.toUIntNative()
-    let finished: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
-    for (entry in TIMER_ENTRIES) {
-        if (entry.handle.toUIntNative() == addr) {
-            entry.cb()
-            if (!entry.repeat) {
-                finished.add(entry)
+    timerDispatchDepth += 1
+    var i: Int64 = 0
+    while (i < TIMER_ENTRIES.size) {
+        let entry = TIMER_ENTRIES[i]
+        if (entry.handle.toUIntNative() == addr && entry.active) {
+            let repeat = entry.repeat
+            try {
+                entry.cb()
+            } catch (e: Exception) {
+                App.reportCallbackError(e)
+            }
+            // 回调里可能已经 cancel()，此时 active=false，不能再 delete 一次。
+            if (!repeat && entry.active) {
+                entry.active = false
+                unsafe { lv_timer_delete(entry.handle) }
             }
         }
+        i += 1
     }
-    for (entry in finished) {
+    timerDispatchDepth -= 1
+    if (timerDispatchDepth == 0) {
+        compactTimers()
+    }
+}
+
+/**
+ * 定时器句柄：用于取消、暂停、恢复或立即触发定时器。
+ * 一次性定时器执行完后 isActive() 会变为 false。
+ */
+public class TimerHandle {
+    private let entry: TimerEntry
+
+    internal init(entry: TimerEntry) {
+        this.entry = entry
+    }
+
+    public func isActive(): Bool {
+        entry.active
+    }
+
+    /** 取消定时器；可重复调用，回调内部调用也安全 */
+    public func cancel(): Unit {
+        if (!entry.active) {
+            return
+        }
+        entry.active = false
         unsafe { lv_timer_delete(entry.handle) }
-        var i: Int64 = 0
-        while (i < TIMER_ENTRIES.size) {
-            if (TIMER_ENTRIES[i].handle.toUIntNative() == addr) {
-                TIMER_ENTRIES.remove(at: i)
-            } else {
-                i += 1
-            }
+        if (timerDispatchDepth == 0) {
+            removeTimerEntry(entry)
+        }
+    }
+
+    public func pause(): Unit {
+        if (entry.active) {
+            unsafe { lv_timer_pause(entry.handle) }
+        }
+    }
+
+    public func resume(): Unit {
+        if (entry.active) {
+            unsafe { lv_timer_resume(entry.handle) }
+        }
+    }
+
+    /** 让定时器在下一次 lv_timer_handler 中立即执行 */
+    public func ready(): Unit {
+        if (entry.active) {
+            unsafe { lv_timer_ready(entry.handle) }
+        }
+    }
+
+    public func setPeriod(period: UInt32): Unit {
+        if (entry.active) {
+            unsafe { lv_timer_set_period(entry.handle, period) }
         }
     }
 }
@@ -205,19 +366,33 @@ public class Timer {
     private init() {}
 
     /** 每 period 毫秒执行一次 */
-    public static func every(period: UInt32, cb: () -> Unit): Unit {
+    public static func every(period: UInt32, cb: () -> Unit): TimerHandle {
         register(period, cb, true)
     }
 
     /** 延时 delay 毫秒执行一次 */
-    public static func once(delay: UInt32, cb: () -> Unit): Unit {
+    public static func once(delay: UInt32, cb: () -> Unit): TimerHandle {
         register(delay, cb, false)
     }
 
-    private static func register(period: UInt32, cb: () -> Unit, repeat: Bool): Unit {
-        TIMER_ENTRIES.add(TimerEntry(CPointer<lv_timer_t>(), cb, repeat))
-        let idx = TIMER_ENTRIES.size - 1
+    /**
+     * @throws[LvglException] lv_timer_create 返回空指针时
+     */
+    private static func register(period: UInt32, cb: () -> Unit, repeat: Bool): TimerHandle {
+        let entry = TimerEntry(CPointer<lv_timer_t>(), cb, repeat)
+        TIMER_ENTRIES.add(entry)
         let handle = unsafe { lv_timer_create(cjTimerDispatch, period, CPointer<Unit>()) }
-        TIMER_ENTRIES[idx].handle = handle
+        if (handle.isNull()) {
+            TIMER_ENTRIES.remove(at: TIMER_ENTRIES.size - 1)
+            throw LvglException("定时器创建失败（period=${period}ms）")
+        }
+        entry.handle = handle
+        TimerHandle(entry)
     }
 }
+
+/**
+ * `Timer` 的别名，避免同时 `import std.sync.*` 时与 `std.sync.Timer` 重名。
+ * 用法：`LvglTimer.every(1000) { ... }`
+ */
+public type LvglTimer = Timer

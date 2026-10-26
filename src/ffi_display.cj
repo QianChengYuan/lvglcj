@@ -53,6 +53,12 @@ foreign func lv_screen_load(scr: CPointer<lv_obj_t>): Unit
 
 foreign func lv_screen_active(): CPointer<lv_obj_t>
 
+/* ---- 层（lv_layer_top 用于光标/悬浮元素，始终在 screen 内容之上） ---- */
+foreign func lv_layer_top(): CPointer<lv_obj_t>
+
+/* ---- 屏幕刷新定时器（拿到后可用 lv_timer_set_period 调刷新率） ---- */
+foreign func lv_display_get_refr_timer(disp: CPointer<lv_display_t>): CPointer<lv_timer_t>
+
 /* ---- 系统监视器（右下角 FPS/CPU 悬浮标签）----
  * 9.5 起挂在 LV_USE_SYSMON + LV_USE_PERF_MONITOR 下；display 创建时 LVGL 会自动显示，
  * 这两个函数用于运行时显隐（disp 传空指针 = 默认 display）。

@@ -1,7 +1,7 @@
 [package]
 cjc-version = "1.2.0"
 name = "lvglcj"
-version = "0.1.0"
+version = "0.2.0"
 output-type = "static"
 description = "仓颉语言的 LVGL 9.5 封装库（友好 API 层 + FFI 层 + C 垫片）"
 compile-option = ""

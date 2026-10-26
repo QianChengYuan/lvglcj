@@ -7,7 +7,7 @@ package lvglcj
 /** 屏幕：对 lv_screen_active 的友好包装，可作为控件的 parent */
 public class Screen <: Widget {
     internal init(handle: CPointer<lv_obj_t>) {
-        super(handle)
+        super(handle, owned: false)
     }
 
     /** 把本屏幕设为活动屏幕（带默认加载动画时长 0） */
@@ -18,6 +18,11 @@ public class Screen <: Widget {
 
 public class Display {
     private var handle: CPointer<lv_display_t>
+    // SDL 后端的鼠标光标对象与它的样式。两者都必须跟着 Display 保活：
+    // Widget 析构会 lv_obj_delete，Style 析构会 lv_style_delete，一旦被 GC 回收，
+    // 指针立刻从画面上消失或下一帧重绘踩到已释放内存。
+    private var cursor: ?Widget = None
+    private var cursorStyle: ?Style = None
 
     internal init(handle: CPointer<lv_display_t>) {
         this.handle = handle
@@ -70,12 +75,35 @@ public class Display {
         if (disp.isNull()) {
             throw LvglException("SDL 后端创建失败（${w}x${h}）")
         }
+        let d = Display(disp)
         // SDL 驱动自带的指针/键盘输入
-        unsafe {
-            lv_sdl_mouse_create()
-            lv_sdl_keyboard_create()
+        let mouse = unsafe { lv_sdl_mouse_create() }
+        unsafe { lv_sdl_keyboard_create() }
+        // LVGL 的 SDL 鼠标驱动只注册 indev，**不会**生成可见指针。
+        // 桌面上还能靠系统光标定位，VNC / 无光标环境里表现就是"点了没反应"。
+        if (!mouse.isNull()) {
+            d.attachCursor(mouse)
         }
-        Display(disp)
+        d
+    }
+
+    /// 在 top layer 上挂一个圆点光标。光标不 clickable，点击事件照常穿透到控件。
+    private func attachCursor(indev: CPointer<lv_indev_t>): Unit {
+        let top = Widget(unsafe { lv_layer_top() }, owned: false)
+        let dot = Container(top)
+        dot.size(16, 16)
+        dot.removeFlag(LV_OBJ_FLAG_CLICKABLE)
+        dot.removeFlag(LV_OBJ_FLAG_SCROLLABLE)
+        let s = Style()
+            .bgColor(0xED, 0xED, 0xF5)
+            .radius(8)
+            .borderWidth(2)
+            .borderColor(0x4E, 0xC9, 0xE8)
+            .padAll(0)
+        s.applyTo(dot)
+        unsafe { lv_indev_set_cursor(indev, dot.raw()) }
+        this.cursor = dot
+        this.cursorStyle = s
     }
 
     /* ==================== 查询 ==================== */
@@ -108,6 +136,18 @@ public class Display {
     /** 切换色深格式（LV_COLOR_FORMAT_RGB565 / RGB565_SWAPPED / XRGB8888 / L8 ...） */
     public func setColorFormat(cf: UInt32): Unit {
         unsafe { lv_display_set_color_format(handle, cf) }
+    }
+
+    /**
+     * 屏幕刷新周期（毫秒）。LVGL 默认 33ms（约 30fps），在树莓派这类低算力板子上
+     * 单是全屏刷新就能吃掉近一个核，主线程被占满 → 输入响应迟钝、看起来像卡死。
+     * 界面以静态内容为主时调到 60~100ms（10~16fps）体感几乎无差别。
+     */
+    public func setRefreshPeriod(periodMs: UInt32): Unit {
+        let t = unsafe { lv_display_get_refr_timer(handle) }
+        if (!t.isNull()) {
+            unsafe { lv_timer_set_period(t, periodMs) }
+        }
     }
 
     /** 渲染模式（LV_DISPLAY_RENDER_MODE_PARTIAL/DIRECT/FULL） */

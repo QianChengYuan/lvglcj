@@ -46,18 +46,18 @@ try {
 
 **LVGL 不是线程安全的。** 所有 `lv_*` 调用都必须在同一线程（主线程）：
 
-- `Timer.every/once` 的回调在 `lv_timer_handler` 里执行 → 属于主线程，可直接操作控件；
-- `Widget.onEvent` 的回调同理；
-- **回调里抛出的异常不能跨 C 边界传播**（会直接 abort），回调内部必须自行 `try/catch`；
-- 后台线程（网络/采集/解码）只投递数据，UI 更新交回主线程。
+- `Timer.every/once` 的回调、`Widget.onEvent` 的回调、`App.post` 投递的任务，全部在 `App.runOnce()` / `App.run()` 的主线程上下文中执行；
+- 回调异常不会跨 C 边界传播：库内统一捕获，默认打印到控制台；可用 `App.onCallbackError` 注册自定义处理器（见下）；
+- 后台线程（网络/采集/解码）更新 UI 的唯一推荐方式是 `App.post { ... }`，任务线程安全入队，下一轮主循环执行；
+- `Widget.onEvent`、`EventSubscription.cancel()`、`TimerHandle` 的 `cancel/pause/resume/ready/setPeriod` 都会直接操作 LVGL，必须在主线程调用；后台线程请先 `App.post` 转交。
 
 ### 0.4 句柄所有权
 
 | 类型 | 谁持有 | 释放方式 |
 |---|---|---|
-| `Widget` 及其子类 | LVGL 对象树（C 侧） | `finalize()` / `delete()`，或随父对象一起销毁 |
-| `Screen` | LVGL display | 不要手动释放 |
-| `Event.target()` 返回的 `Widget` | **借用**（与源控件共享句柄） | **不要**调用 `finalize()` |
+| `Widget` 及其子类 | LVGL 对象树（C 侧） | `finalize()` 同步删除 / `delete()` 异步删除，二者都幂等；也可随父对象一起销毁 |
+| `Screen` | LVGL display | **借用视图**，`finalize()` / `delete()` 会抛 `LvglException` |
+| `Event.target()` 返回的 `Widget` | **借用**（与源控件共享句柄） | **不要**释放；`finalize()` / `delete()` 会抛 `LvglException` |
 | `Style` | 仓颉对象持有 C 堆 `lv_style_t` | 析构自动 `lv_style_delete` |
 | `Font.load/systemCjk` | FreeType | `close()`，或随进程结束回收 |
 | `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free` |
@@ -143,11 +143,37 @@ println("内存 ${m.usedSize}/${m.totalSize} 字节（${m.usedPct}%），碎片 
 | `App.setup(): Unit` | `lv_init()` + 把单调时钟挂到 `lv_tick_set_cb`。**必须最先调用**；不挂 tick，画面第一帧后就会卡死 |
 | `App.shutdown(): Unit` | `lv_deinit()` 与资源回收 |
 | `App.mainDisplay(): Display` | 默认 display 的包装 |
-| `App.runOnce(): UInt32` | 手动泵一次 `lv_timer_handler`，返回距下次定时器的毫秒数（便于和业务线程协作） |
+| `App.post(task: () -> Unit): Unit` | **线程安全**投递 UI 任务；下一轮 `runOnce()` 在主线程执行，每轮最多 256 个 |
+| `App.onCallbackError(handler: (Exception) -> Unit): Unit` | 注册事件/定时器/post 任务的异常处理器 |
+| `App.clearCallbackErrorHandler(): Unit` | 恢复默认的控制台错误输出 |
+| `App.runOnce(): UInt32` | 先执行 post 任务，再泵一次 `lv_timer_handler`，返回距下次定时器的毫秒数 |
 | `App.run(idleMs!: UInt32 = 5): Unit` | 主循环：`runOnce()` + `lv_sleep_ms(idleMs)`，直到 `App.stop()` |
 | `App.stop(): Unit` | 请求退出主循环 |
 
 `idleMs` 的取舍：5 ms 足够流畅；设 0 会空转吃满一个核；低功耗场景可放到 10–16 ms。
+
+后台线程更新 UI：
+
+```cangjie
+// worker 线程：只做数据准备，不碰控件
+App.post {
+    label.text("采集完成")
+    slider.value(progress, anim: false)
+}
+```
+
+回调异常兜底：
+
+```cangjie
+App.onCallbackError {e =>
+    // e.message 是原始异常文本；这里可以做日志、弹错误页或降级
+    println("UI 回调失败：${e.message}")
+}
+// 事件、定时器、post 任务里抛出的 LvglException/Exception 都会走这里。
+// 未注册时库默认打印到控制台，不会 abort 进程。
+```
+
+> 处理器仍在主线程执行，不要在里面做阻塞 IO。处理器自身抛出的异常会被库再次捕获并打印，不会继续向外传播。
 
 ### `Perf`
 
@@ -167,12 +193,21 @@ LVGL 9.5 没有导出 perf monitor 的查询 API（数据在私有结构体里�
 
 `LV_USE_PERF_MONITOR=1` 时 `lv_display_create` 会自动把它打开，所以要么在创建 display 之后立刻 `Perf.hideMonitor()`，要么在 `lv_conf.h` 里把 `LV_USE_PERF_MONITOR` 设为 0 再重编静态库（后者才真正省掉这部分开销）。
 
-### `Timer`
+### `Timer` / `TimerHandle`
 
 ```cangjie
 public class Timer {
-    public static func every(period: UInt32, cb: () -> Unit): Unit   // 每 period 毫秒
-    public static func once(delay: UInt32, cb: () -> Unit): Unit     // 延时一次
+    public static func every(period: UInt32, cb: () -> Unit): TimerHandle   // 每 period 毫秒
+    public static func once(delay: UInt32, cb: () -> Unit): TimerHandle     // 延时一次
+}
+
+public class TimerHandle {
+    public func isActive(): Bool
+    public func cancel(): Unit          // 取消；可重复调用，回调内部调用也安全
+    public func pause(): Unit
+    public func resume(): Unit
+    public func ready(): Unit           // 下一次 lv_timer_handler 立即执行
+    public func setPeriod(period: UInt32): Unit
 }
 ```
 
@@ -183,14 +218,21 @@ var elapsedSec: Int32 = 0            // 模块级
 
 main() {
     ...
-    Timer.every(1000) {
+    let ticker = Timer.every(1000) {
         elapsedSec += 1
         label.setTextFmt("已运行 %d 秒", [elapsedSec])
     }
+
+    // 需要停止时（例如页面卸载）：
+    ticker.cancel()
 }
 ```
 
-> `once` 的定时器触发后由库自动 `lv_timer_delete`，无需手工清理。
+> - 若同时 `import std.sync.*`，`Timer` 会与 `std.sync.Timer` 重名；改用本库提供的别名 `LvglTimer.every(...)` / `LvglTimer.once(...)`；
+> - `once` 触发后自动失效，`handle.isActive()` 变为 `false`，无需手工清理；
+> - `cancel()` 幂等，且在定时器回调内部调用不会造成双重 `lv_timer_delete`；
+> - `TimerHandle` 的操作直接调用 LVGL，必须在主线程执行；后台线程请 `App.post` 转交；
+> - 回调异常会交给 `App.onCallbackError`，不会中断其他定时器。
 
 ---
 
@@ -304,13 +346,29 @@ public class Event {
 
 | 方法 | 说明 |
 |---|---|
-| `onEvent(mask: UInt32, cb: (Event) -> Unit)` | 订阅事件，`mask` 为 `LV_EVENT_*` 或 `LV_EVENT_ALL` |
+| `onEvent(mask: UInt32, cb: (Event) -> Unit): EventSubscription` | 订阅事件，`mask` 为 `LV_EVENT_*` 或 `LV_EVENT_ALL` |
+| `offEvent(sub: EventSubscription)` | 取消订阅，等价于 `sub.cancel()` |
+| `sendEvent(code: UInt32)` | 主动触发事件（测试/模拟输入） |
+
+`EventSubscription`：
+
+| 方法 | 说明 |
+|---|---|
+| `isActive(): Bool` | 是否仍有效；控件删除后自动变为 `false` |
+| `cancel(): Unit` | 取消订阅；幂等，回调内部取消也安全 |
 
 ```cangjie
-slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
+let sub = slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
     println("值变了：${slider.valueGet()}")   // 直接捕获控件对象，见 9.3
 }
+
+// 页面卸载、条件不再需要时：
+sub.cancel()
 ```
+
+> 每个控件只向 LVGL 注册一个 `LV_EVENT_ALL` C 回调，仓颉侧按 mask 过滤；控件收到 `LV_EVENT_DELETE`（含父对象递归删除）时会回收整张订阅表，不会长期泄漏。
+>
+> `onEvent`、`cancel` 都需要改 LVGL 对象，必须在主线程调用。
 
 **局部样式快捷接口**
 
@@ -325,9 +383,12 @@ slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
 
 | 方法 | 说明 |
 |---|---|
-| `finalize()` | 从父对象删除并销毁 |
-| `delete()` | 同 `finalize()`（在定时器回调里删除更安全） |
+| `finalize()` | 同步从父对象删除并销毁；幂等；借用视图抛 `LvglException` |
+| `delete()` | 请求异步删除（`lv_obj_delete_async`），在定时器/事件回调里更安全；幂等；借用视图抛 `LvglException` |
+| `isDeleted(): Bool` | 是否已请求删除（异步删除真正执行前也会返回 `true`） |
 | `invalidate()` | 内容变化后触发重绘 |
+
+> 同一个包装对象上重复 `finalize()` / `delete()` 不会重复释放 C 指针；但**不要**在删除后继续调用其它 `lv_*` 方法。借用视图（`Screen`、`Event.target()`）的 `finalize()` / `delete()` 会直接抛异常，避免误删屏幕或事件源。
 
 ### 控件一览
 
@@ -335,10 +396,10 @@ slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
 |---|---|---|
 | `Container(parent)` | `lv_obj_create` | 无（纯容器） |
 | `Label(parent)` | `lv_label_create` | `text(s)`、`setTextFmt(fmt, args)`、`color(r,g,b)`、`longMode(mode)` |
-| `Button(parent)` | `lv_button_create` | `onClick(cb: () -> Unit)`、`checkable()` |
-| `Switch(parent)` | `lv_switch_create` | `setChecked(on)`、`isChecked(): Bool` |
-| `Checkbox(parent)` | `lv_checkbox_create` | `text(s)`、`setChecked(on)`、`isChecked()` |
-| `Slider(parent)` | `lv_slider_create` | `value(v, anim!: Bool = true)`、`valueGet(): Int32`、`range(min, max)` |
+| `Button(parent)` | `lv_button_create` | `onClick(cb: () -> Unit): EventSubscription`、`checkable()` |
+| `Switch(parent)` | `lv_switch_create` | `setChecked(on)`、`isChecked(): Bool`、`onChanged(cb: (Bool) -> Unit): EventSubscription` |
+| `Checkbox(parent)` | `lv_checkbox_create` | `text(s)`、`setChecked(on)`、`isChecked()`、`onChanged(cb: (Bool) -> Unit): EventSubscription` |
+| `Slider(parent)` | `lv_slider_create` | `value(v, anim!: Bool = true)`、`valueGet(): Int32`、`range(min, max)`、`onValueChanged(cb: (Int32) -> Unit): EventSubscription` |
 | `Arc(parent)` | `lv_arc_create` | `value(v)`、`angles(start, end)`、`rotation(deg)` |
 | `Bar(parent)` | `lv_bar_create` | `value(v, anim!)`、`range(min, max)` |
 | `Spinbox(parent)` | `lv_spinbox_create` | `value(v)`、`range(min, max)` |
@@ -359,7 +420,7 @@ slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
 | `Led(parent)` | `lv_led_create` | `color(r,g,b)`、`brightness(v)`、`on()`、`off()` |
 | `Canvas(parent, w, h, cf!)` | `lv_canvas_create` | 见 [7](#7-imagecj--像素缓冲--图像--画布) |
 | `SpanGroup(parent)` | `lv_spangroup_create` | `add(): SpanPart`、`add(text)`、`spanCount()`、`textAlign(a)`、`overflow(o)`、`indent(px)`、`mode(m)`、`maxLines(n)`、`refresh()` |
-| `Calendar(parent)` | `lv_calendar_create` | `today(y,m,d)`、`showMonth(y,m)`、`headerArrow()`、`headerDropdown()`、`highlight(dates)`、`pressedDate()`、`onPressed(cb)` |
+| `Calendar(parent)` | `lv_calendar_create` | `today(y,m,d)`、`showMonth(y,m)`、`headerArrow()`、`headerDropdown()`、`highlight(dates)`、`pressedDate()`、`onPressed(cb): EventSubscription` |
 | `AnimImage(parent)` | `lv_animimg_create` | `frames(list, durationMs!)`、`start()`、`repeatCount(n)`、`srcCount()` |
 | `ImePinyin(parent)` | `lv_ime_pinyin_create` | `bindKeyboard(kb: Keyboard)`、`mode(m)` |
 
@@ -664,7 +725,7 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 
 - 视频播放（解码链路不在本库范围；可走 LVGL 的 GStreamer 源或 v4l2m2m → `ImageBuffer`）
 - GPU 加速渲染（当前为纯 CPU 软渲染）
-- 事件回调里的异常跨语言传播
+- 依赖异常跨语言传播做业务控制流（库会在 C 边界兜底捕获并交给 `App.onCallbackError`，但业务仍应显式处理可预期错误）
 
 ### 9.2 需要自己配 `lv_conf.h`
 
@@ -692,7 +753,20 @@ slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
 }
 ```
 
-如果事件来源不确定（例如多个控件共用一个回调），就让每个控件各自注册一个自己的闭包，而不是在回调里猜类型。
+如果事件来源不确定（例如多个控件共用一个回调），就让每个控件各自注册一个自己的闭包，而不是在回调里猜类型。常见控件也提供了带类型的快捷订阅：
+
+```cangjie
+let sliderSub = slider.onValueChanged {v => println("滑块 ${v}")}
+let switchSub = sw.onChanged {on => println("开关 ${on}")}
+let clickSub = btn.onClick { => println("点击")}
+
+// 需要时取消；控件删除后这些订阅会自动失效
+sliderSub.cancel()
+switchSub.cancel()
+clickSub.cancel()
+```
+
+`Event.target()` 与 `Screen` 都是借用视图：`finalize()` / `delete()` 会抛 `LvglException`，不会误删 LVGL 内部对象。
 
 ### 9.3.1 回调里不能捕获局部可变变量
 

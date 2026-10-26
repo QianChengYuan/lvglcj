@@ -13,6 +13,11 @@
 
 /* ---- 显示 / 输入后端 ---- */
 #define LV_USE_SDL 1                /* 桌面窗口验证（WSLg / Windows MSYS2 通用） */
+/* 0 = SDL 软件渲染器。默认的 SDL_RENDERER_ACCELERATED 需要 GL/GPU 上下文：
+   WSL 没有 WSLg 时（SDL_VIDEODRIVER=dummy / offscreen）创建渲染器会直接失败，
+   而这个机器的 WSLg 一直是坏的。LVGL 本来就是 CPU 画图，SDL 只负责把纹理贴到窗口，
+   软件渲染没有实际损失，Windows/WSL 都能跑。 */
+#define LV_SDL_ACCELERATED 0
 #define LV_USE_LINUX_DRM 0
 #define LV_USE_LINUX_FBDEV 0
 /* evdev 驱动依赖 <linux/input.h>、<sys/epoll.h>，MinGW 下不存在；
@@ -36,9 +41,18 @@
 #define LV_USE_ASSERT_MEM_INTEGRITY 1
 #define LV_USE_ASSERT_OBJ 1
 #define LV_USE_ASSERT_STYLE 1
+/* 断言失败要"炸出来"。LVGL 默认 LV_ASSERT_HANDLER 是 `while(1);`，在 Pi 上实测过
+   一次 FreeType 字形缓存分配失败 → lv_draw_buf_destroy(NULL) → LV_ASSERT_NULL →
+   永久自旋，界面全停但其它线程还在跑（声音继续），从外面看就是"界面卡死"。
+   开发配置改成 abort()：同样的问题会立刻带栈崩掉，一眼能看见。 */
+#define LV_ASSERT_HANDLER_INCLUDE <stdlib.h>
+#define LV_ASSERT_HANDLER abort();
 
 /* ---- 内存池 ---- */
-#define LV_MEM_SIZE (256 * 1024U)
+/* 1MB：这块只放 LVGL 对象/样式/字形缓存。原来 256KB 时，FreeType 字形缓存上限
+   512 项（每项一个 glyph 位图 draw_buf）就能把池子吃光 → 分配失败 → 见上面断言说明，
+   Pi 上《大鱼》卡死就是这么来的。 */
+#define LV_MEM_SIZE (1024 * 1024U)
 #define LV_MEM_ADR 0
 
 /* ---- 诊断 ---- */
@@ -63,7 +77,8 @@
 
 /* ---- FreeType：运行时加载系统 CJK 字体（内置子集只有 1338 字，覆盖不全） ---- */
 #define LV_USE_FREETYPE 1
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 512
+/* 192 项 ≈ 100KB 字形位图，够 5 行中文歌词 + 列表标题常驻；超出按 LRU 重建 */
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 192
 
 /* ---- 图像文件解码 / 文件系统（Image.fromFile）
    lodepng 是 LVGL 内置、零外部依赖的解码器，PNG 足以覆盖图标与截图场景；

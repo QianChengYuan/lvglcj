@@ -35,9 +35,18 @@
 #define LV_USE_ASSERT_MEM_INTEGRITY 0
 #define LV_USE_ASSERT_OBJ 0
 #define LV_USE_ASSERT_STYLE 0
+/* LV_ASSERT_NULL 默认是 1，且失败时走 LV_ASSERT_HANDLER（默认 `while(1);`）→ 直接卡死在
+   定时器里，界面全停但音频线程还在放。FreeType 字形缓存用满内存时 LVGL 会把自己的
+   draw_buf 传成 NULL（lv_freetype_image.c 的 free_cb 没判空），一断言就永久自旋，
+   2026-10-26 在 Pi 上就踩到了。这里关掉 NULL 断言：lv_draw_buf_destroy(NULL) 会走
+   函数内的 `if(draw_buf == NULL) return;`，最坏只丢一帧字形，不会锁死界面。 */
+#define LV_USE_ASSERT_NULL 0
 
-/* ---- 内存池：SDL 后端 buffer 走系统堆，这里只放对象/样式 ---- */
-#define LV_MEM_SIZE (128 * 1024U)
+/* ---- 内存池：SDL 后端 buffer 走系统堆，这里只放对象/样式/字形缓存 ----
+   128KB 时零头就没了：FreeType 每个字形位图是一个 lv_draw_buf（20px 汉字约 0.5KB），
+   缓存上限 256 个 ≈ 128KB 全部吃光 → 后续字形分配失败 → 见上面的断言说明。
+   真机 415MB 内存，给到 512KB 很宽松。 */
+#define LV_MEM_SIZE (512 * 1024U)
 #define LV_MEM_ADR 0
 
 /* ---- 诊断：保留 FPS 监控，关掉内存监控省一点开销 ---- */
@@ -59,7 +68,9 @@
 
 /* ---- FreeType：加载 /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf ---- */
 #define LV_USE_FREETYPE 1
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+/* 每个缓存项就是一个字形位图 draw_buf；配合 512KB 池，128 项（≈64KB）足够
+   5 行歌词 + 列表标题的常驻字形，超出的按 LRU 重建即可。 */
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 128
 
 /* ---- 图像文件解码 / 文件系统（Image.fromFile） ---- */
 #define LV_USE_LODEPNG 1
