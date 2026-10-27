@@ -25,6 +25,9 @@ foreign func lv_sleep_ms(ms: UInt32): Unit
 /** 泵一次定时器与渲染，返回距下次定时器的毫秒数 */
 foreign func lv_timer_handler(): UInt32
 
+/** 立即同步刷新（传空指针 = 所有 display），不等刷新定时器到期 */
+foreign func lv_refr_now(disp: CPointer<lv_display_t>): Unit
+
 foreign func lv_timer_get_idle(): UInt32
 
 foreign func lv_timer_get_time_until_next(): UInt32

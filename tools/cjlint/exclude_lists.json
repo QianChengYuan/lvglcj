@@ -1,19 +1,20 @@
 {
     "FFI.C.7": [
-        {"path": "widget.cj", "line": "487"},
-        {"path": "widget.cj", "line": "689"},
-        {"path": "widget.cj", "line": "870"},
-        {"path": "widget.cj", "line": "1072"}
+        {"path": "widget_media.cj", "line": "29"},
+        {"path": "widget_rich.cj", "line": "255"}
+    ],
+    "G.EXP.07": [
+        {"path": "app.cj", "line": "256"}
     ],
     "G.FUN.01": [
         {"path": "ffi_draw.cj", "line": "76"},
         {"path": "ffi_draw.cj", "line": "83"},
         {"path": "ffi_draw.cj", "line": "86"},
-        {"path": "image.cj", "line": "133"},
-        {"path": "image.cj", "line": "134"},
-        {"path": "image.cj", "line": "141"},
-        {"path": "image.cj", "line": "142"},
-        {"path": "image.cj", "line": "151"}
+        {"path": "image.cj", "line": "151"},
+        {"path": "image.cj", "line": "152"},
+        {"path": "image.cj", "line": "159"},
+        {"path": "image.cj", "line": "160"},
+        {"path": "image.cj", "line": "169"}
     ],
     "G.ITF.02": [
         {"path": "color_test.cj", "line": "14"},
@@ -96,37 +97,34 @@
         {"path": "widget_test.cj", "line": "16"},
         {"path": "widget_test.cj", "line": "17"},
         {"path": "widget_test.cj", "line": "18"},
-        {"path": "widget.cj", "line": "9"},
-        {"path": "widget.cj", "line": "10"}
+        {"path": "widget.cj", "line": "15"},
+        {"path": "widget_media.cj", "line": "8"},
+        {"path": "widget_rich.cj", "line": "8"}
     ],
     "G.VAR.02": [
-        {"path": "app.cj", "line": "14"},
         {"path": "app.cj", "line": "15"},
-        {"path": "app.cj", "line": "38"},
         {"path": "app.cj", "line": "39"},
         {"path": "app.cj", "line": "40"},
         {"path": "app.cj", "line": "41"},
-        {"path": "app.cj", "line": "65"},
         {"path": "app.cj", "line": "67"},
         {"path": "app.cj", "line": "74"},
-        {"path": "app.cj", "line": "263"},
+        {"path": "app.cj", "line": "249"},
+        {"path": "app.cj", "line": "250"},
+        {"path": "app.cj", "line": "251"},
+        {"path": "app.cj", "line": "407"},
+        {"path": "display.cj", "line": "80"},
+        {"path": "display.cj", "line": "142"},
+        {"path": "image.cj", "line": "72"},
         {"path": "image_buffer_test.cj", "line": "16"},
-        {"path": "image.cj", "line": "71"},
-        {"path": "style.cj", "line": "112"},
-        {"path": "style.cj", "line": "187"},
-        {"path": "style.cj", "line": "282"},
+        {"path": "style.cj", "line": "121"},
+        {"path": "style.cj", "line": "196"},
+        {"path": "style.cj", "line": "291"},
         {"path": "test_support_test.cj", "line": "15"},
-        {"path": "widget_test.cj", "line": "21"},
-        {"path": "widget.cj", "line": "35"},
-        {"path": "widget.cj", "line": "37"},
-        {"path": "widget.cj", "line": "77"},
-        {"path": "widget.cj", "line": "95"},
-        {"path": "widget.cj", "line": "586"},
-        {"path": "widget.cj", "line": "788"},
-        {"path": "widget.cj", "line": "790"},
-        {"path": "widget.cj", "line": "868"},
-        {"path": "widget.cj", "line": "992"},
-        {"path": "widget.cj", "line": "1070"}
+        {"path": "widget.cj", "line": "82"},
+        {"path": "widget.cj", "line": "100"},
+        {"path": "widget_media.cj", "line": "152"},
+        {"path": "widget_rich.cj", "line": "175"},
+        {"path": "widget_rich.cj", "line": "253"},
+        {"path": "widget_test.cj", "line": "21"}
     ]
 }
-

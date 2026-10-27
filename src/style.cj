@@ -83,10 +83,16 @@ public class Style {
 
     /**
      * 应用到控件的指定部位。
+     *
+     * @lifetime 借用：`lv_obj_add_style` 只保存 `lv_style_t*`。本方法会把该 Style
+     *           登记到控件上（`Widget.keepStyle`），因此 `Style().radius(8).applyTo(btn)`
+     *           这种临时对象写法也安全 —— 样式会活到控件销毁。
      * @param part LV_PART_MAIN / SCROLLBAR / INDICATOR / KNOB ...（可或上 LV_STATE_*）
      */
     public func applyTo(obj: Widget, part!: UInt32 = LV_PART_MAIN): Unit {
+        App.assertUIThread("Style.applyTo")
         unsafe { lv_obj_add_style(obj.raw(), handle, part) }
+        obj.keepStyle(this)
     }
 
     /** 底层句柄（内部使用：span 等需要直接传 lv_style_t* 的 API） */
@@ -96,7 +102,10 @@ public class Style {
 
     ~init() {
         if (!handle.isNull()) {
-            unsafe { lv_style_delete_cjbindwrapper(handle) }
+            // 终结器跑在 GC 线程（不是 UI 线程），lv_style_delete 会改 LVGL 的样式链表，
+            // 因此交给 App 回投到 UI 线程执行。
+            App.releaseStyle(handle)
+            handle = CPointer<lv_style_t>()
         }
     }
 }

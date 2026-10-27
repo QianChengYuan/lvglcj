@@ -14,6 +14,7 @@ class AppDispatcherTests {
     static var posted: Int32 = 0
     static var ticks: Int32 = 0
     static var caught: String = ""
+    static var threadErr: String = ""
 
     @TestCase
     func testPostRunsOnPump() {
@@ -73,6 +74,24 @@ class AppDispatcherTests {
         @Expect(handle.isActive(), false)
     }
 
+    /** 周期 0 会让 LVGL 每轮 handler 都触发，必须直接拒绝 */
+    @TestCase
+    func testTimerEveryRejectsZeroPeriod() {
+        ensureLvglInit()
+        ticks = 0
+        @ExpectThrows[LvglException](AppDispatcherTests.registerZeroPeriodTimer())
+        @Expect(ticks, 0)
+    }
+
+    /** lv_init 不可重入，App.setup() 库层自己守卫 */
+    @TestCase
+    func testAppSetupIsIdempotent() {
+        ensureLvglInit()
+        App.setup()
+        App.setup()
+        @Expect(true)
+    }
+
     @TestCase
     func testTimerCallbackErrorIsReported() {
         ensureLvglInit()
@@ -86,5 +105,32 @@ class AppDispatcherTests {
         App.clearCallbackErrorHandler()
         @Expect(caught, "timer boom")
         @Expect(handle.isActive(), false)
+    }
+
+    /**
+     * 线程断言：打开后，非 UI 线程调用注册类 API 必须抛 LvglException，
+     * 而不是留到运行时变成堆损坏。
+     */
+    @TestCase
+    func testThreadAssertCatchesBackgroundThread() {
+        ensureLvglInit()
+        threadErr = ""
+        App.enableThreadAssert(true)
+        // 后台线程（与 App.setup() 所在线程不同）应当被拦下
+        let worker = spawn {
+            try {
+                App.assertUIThread("后台线程操作控件")
+            } catch (e: LvglException) {
+                threadErr = e.message
+            }
+        }
+        worker.get()
+        App.enableThreadAssert(false)
+        @Expect(threadErr != "", true)
+    }
+
+    /** @ExpectThrows 的参数里直接写尾随 lambda 容易踩宏解析坑，包一层静态函数 */
+    static func registerZeroPeriodTimer(): Unit {
+        let _ = Timer.every(0) {ticks += 1}
     }
 }

@@ -18,9 +18,9 @@ public class Screen <: Widget {
 
 public class Display {
     private var handle: CPointer<lv_display_t>
-    // SDL 后端的鼠标光标对象与它的样式。两者都必须跟着 Display 保活：
-    // Widget 析构会 lv_obj_delete，Style 析构会 lv_style_delete，一旦被 GC 回收，
-    // 指针立刻从画面上消失或下一帧重绘踩到已释放内存。
+    // SDL 后端的鼠标光标对象。Widget 析构会 lv_obj_delete，被 GC 回收后光标会立刻从画面消失，
+    // 所以跟着 Display 保活。（样式不用单独存：applyTo 会自动登记到控件上，
+    // 见 Widget.keepStyle；这里保留 cursorStyle 只是为了换主题时能改动同一份样式对象。）
     private var cursor: ?Widget = None
     private var cursorStyle: ?Style = None
 
@@ -94,12 +94,7 @@ public class Display {
         dot.size(16, 16)
         dot.removeFlag(LV_OBJ_FLAG_CLICKABLE)
         dot.removeFlag(LV_OBJ_FLAG_SCROLLABLE)
-        let s = Style()
-            .bgColor(0xED, 0xED, 0xF5)
-            .radius(8)
-            .borderWidth(2)
-            .borderColor(0x4E, 0xC9, 0xE8)
-            .padAll(0)
+        let s = Style().bgColor(0xED, 0xED, 0xF5).radius(8).borderWidth(2).borderColor(0x4E, 0xC9, 0xE8).padAll(0)
         s.applyTo(dot)
         unsafe { lv_indev_set_cursor(indev, dot.raw()) }
         this.cursor = dot

@@ -301,4 +301,83 @@ class WidgetTests {
         single.add(dscs[0])
         @ExpectThrows[LvglException](AnimImage(screen()).frames(single.toArray()))
     }
+
+    /**
+     * Line：lv_line_set_points 只存指针，顶点数组必须由控件保活。
+     * 这里连续替换两次顶点并泵几帧（真绘制发生在 timer handler 里），
+     * 修前的实现会在第一帧绘制时读到已 free 的内存（UAF）。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testLineSetPointsKeepsBufferAlive() {
+        let line = Line(screen())
+        let wide: Array<(Int32, Int32)> = [(0, 0), (20, 30), (40, 10), (60, 30), (80, 0)]
+        line.setPoints(wide)
+        // refreshNow 而不是 runOnce：后者可能没到刷新时刻，绘制路径根本没执行，
+        // 那条「读到已释放顶点」的 UAF 也就测不出来（ASan 下必须真画一帧）。
+        App.refreshNow()
+        // 替换成更小的数组：旧缓冲必须在新缓冲生效后才释放
+        let narrow: Array<(Int32, Int32)> = [(0, 0), (80, 80)]
+        line.setPoints(narrow)
+        App.refreshNow()
+        // 少于 2 点必须拒绝，且不能破坏已有的顶点数组
+        let singlePoint: Array<(Int32, Int32)> = [(0, 0)]
+        @ExpectThrows[LvglException](line.setPoints(singlePoint))
+        App.refreshNow()
+        line.finalize()
+        @Expect(true)
+    }
+
+    /**
+     * Image.setSource 必须持有 ImageDsc 强引用：dsc 是临时对象时，
+     * 若控件不保活，GC 后 lv_image 会读已释放的 dsc（画面花掉或崩）。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testImageSetSourceKeepsDsc() {
+        let w: Int32 = 8
+        let h: Int32 = 8
+        let buf = ImageBuffer(w, h, LV_COLOR_FORMAT_RGB565)
+        buf.writePixels(Array<UInt8>(Int64(w) * Int64(h) * 2, repeat: 0x3F))
+        let img = Image(screen())
+        img.setSource(buf.toImageDsc()) // 临时 dsc：由 Image 负责保活
+        App.runOnce()
+        @Expect(img.width() >= 0, true)
+        // 换成文件源后应释放对 dsc 的引用（文件不存在会抛，且不影响已有引用）
+        @ExpectThrows[LvglException](img.setFile("/no/such/dir/lvglcj-none.png"))
+        App.runOnce()
+        img.finalize()
+        @Expect(true)
+    }
+
+    /**
+     * Style 自动保活：applyTo 只把 lv_style_t* 交给 LVGL，若控件不持有仓颉对象，
+     * 临时 Style 被 GC 后绘制就会读到已释放内存（偶发花屏）。这里断言"控件确实挂住了"。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testStyleTemporaryIsKeptByWidget() {
+        let btn = Button(screen())
+        @Expect(btn.keptStyleCount(), 0)
+        Style().radius(8).bgColor(0x33, 0x66, 0x99).applyTo(btn) // 临时对象，出语句即无本地引用
+        @Expect(btn.keptStyleCount(), 1)
+        Style().borderWidth(2).applyTo(btn)
+        @Expect(btn.keptStyleCount(), 2)
+        App.refreshNow() // 真画一帧：没保活的话，ASan 下这里就是 heap-use-after-free
+        btn.finalize()
+        @Expect(true)
+    }
+
+    /** SpanPart.style 同理：样式登记在所属 SpanGroup 上 */
+    @Tag[requires_display]
+    @TestCase
+    func testSpanTemporaryStyleIsKeptByGroup() {
+        let sg = SpanGroup(screen())
+        sg.add("警告：").style(Style().textColor(255, 80, 80)) // 临时对象
+        sg.add("磁盘剩余 12%")
+        @Expect(sg.keptStyleCount(), 1)
+        App.refreshNow()
+        sg.finalize()
+        @Expect(true)
+    }
 }

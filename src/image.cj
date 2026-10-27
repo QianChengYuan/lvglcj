@@ -60,7 +60,8 @@ public class ImageBuffer {
     }
 
     /**
-     * 生成 lv_image_dsc_t（自动填 magic/cf/w/h/stride/data_size），可直接喂给 Image.setSource
+     * 生成 lv_image_dsc_t（自动填 magic/cf/w/h/stride/data_size），可直接喂给 Image.setSource。
+     * 产出的 dsc 持有本缓冲的引用（像素数据不拷贝），因此只要 dsc 活着这块内存就不会被回收。
      * @throws[LvglException] `lv_image_dsc_t` 分配失败时
      */
     public func toImageDsc(): ImageDsc {
@@ -72,7 +73,7 @@ public class ImageBuffer {
         unsafe {
             lv_image_dsc_fill_cjbindwrapper(dsc, cf, UInt32(width), UInt32(height), stride, data, stride * UInt32(height))
         }
-        ImageDsc(dsc)
+        ImageDsc(dsc, owner: this)
     }
 
     ~init() {
@@ -82,18 +83,35 @@ public class ImageBuffer {
     }
 }
 
-/** 图像描述符：lv_image_dsc_t 的友好包装（头部由垫片在 C 侧填充） */
+/**
+ * 图像描述符：lv_image_dsc_t 的友好包装（头部由垫片在 C 侧填充）。
+ *
+ * `dsc.data` **直接指向 ImageBuffer 的像素缓冲、不拷贝**，所以本类持有产出它的
+ * ImageBuffer 的引用；把 dsc 交给 `Image.setSource` / `AnimImage.frames` 后，
+ * 控件保活 dsc、dsc 保活缓冲，整条链上的内存都不会被提前回收。
+ */
 public class ImageDsc {
     private var handle: CPointer<lv_image_dsc_t>
+    // 防止像素缓冲先于 dsc 被 GC（dsc 只存裸指针，持有者是仓颉侧的这个字段）。
+    private let owner: Option<ImageBuffer>
 
-    internal init(handle: CPointer<lv_image_dsc_t>) {
+    internal init(handle: CPointer<lv_image_dsc_t>, owner!: Option<ImageBuffer> = None) {
         this.handle = handle
+        this.owner = owner
     }
 
     ~init() {
         if (!handle.isNull()) {
             unsafe { lv_image_dsc_delete_cjbindwrapper(handle) }
         }
+    }
+
+    /**
+     * 取出 dsc 背后的像素缓冲（本源来自文件时为 None）。
+     * 一般用不到，主要给「想复用同一块缓冲继续改像素」的场景。
+     */
+    public func buffer(): Option<ImageBuffer> {
+        owner
     }
 
     internal func raw(): CPointer<lv_image_dsc_t> {
