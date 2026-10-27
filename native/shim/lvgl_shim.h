@@ -122,6 +122,22 @@ const lv_font_t * lvglcj_font_get_fallback_cjbindwrapper(const lv_font_t * font)
 /* ------------------------------------------------------------------ */
 int32_t lvglcj_image_set_file_cjbindwrapper(lv_obj_t * img, const char * path);
 
+/* ------------------------------------------------------------------ */
+/* 动画                                                                */
+/*                                                                     */
+/* lv_anim_t 是**完整结构**（不是不透明句柄），仓颉侧既不知道 sizeof 也  */
+/* 不该去猜，因此由本层分配 / 释放。                                     */
+/*                                                                     */
+/* lv_anim_path_linear / ease_out 等是**函数**而不是数据符号，仓颉的     */
+/* `foreign func` 只能调用、取不到函数地址，所以按枚举号换函数指针。      */
+/* easing 编号与仓颉侧 `Easing` 枚举一一对应：                           */
+/*   0=linear 1=ease_in 2=ease_out 3=ease_in_out                          */
+/*   4=overshoot 5=bounce 6=step                                          */
+/* ------------------------------------------------------------------ */
+lv_anim_t * lvglcj_anim_new_cjbindwrapper(void);
+void        lvglcj_anim_free_cjbindwrapper(lv_anim_t * a);
+void        lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing);
+
 #ifdef __cplusplus
 }
 #endif

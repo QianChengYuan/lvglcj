@@ -154,6 +154,9 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | 样式 | `Style()` | `bgColor/bgOpa/radius/border/pad/textFont/textColor/shadow` 等链式设置，`applyTo(obj, part, state)`；状态样式（PRESSED/CHECKED/DISABLED）与 part 选择器可用；`Widget.setStyle*` 系列是带 `part!/state!` 的一次性 setter |
 | **布局** | `Widget.flex(flow, gap)` / `flexAlign` / `flexGrow`、`Widget.grid(cols, rows)` / `gridAlign` / `place` | flex（含换行、轨道交叉对齐）与 grid（`Fr`/`Px`/`CONTENT` 轨道、跨行跨列）；布局是惰性的，测试读坐标前先 `updateLayout()` |
 | **保活契约** | `Widget.keep / keepOnly / keepBuf(slot)` | 给「LVGL 只存指针」的 API 用：`keep` 追加、`keepOnly` 替换、`keepBuf` 按槽位接管 malloc 缓冲（grid 用 slot 0/1）；样式/图像/缓冲已由库内部自动登记 |
+| **动画** | `Anim.create()` + `exec/from/to/duration/easing/repeat/playback/onCompleted` | 值动画（int32）；闭包经 token + 条目表桥接，动画结束自动回收；`Anim.liveCount()` 查泄漏，`Anim.cancelAll()` 一键停 |
+| **时间线** | `Timeline.create()` + `add(anim, at: ms)` / `start` / `setProgress` / `close` | 多段动画按起始时刻排布；`close()` 必须显式调用（LVGL 删除时间线不触发片段回调） |
+| **滚动** | `Widget.scrollBy/scrollTo/scrollToY/scrollToView/scrollX/scrollY` | 长度超出容器即可滚；`scrollBy` 的 dx/dy 是「内容位移」，与 `scrollY()` 反向；`anim: true` 走 LVGL 内部动画 |
 | **像素/图像** | `ImageBuffer(w, h, cf)` | 申请并持有一块 LVGL 可直接消费的像素缓冲；`toImageDsc()` 生成 `lv_image_dsc_t`（自动填 `magic`/`cf`/`w`/`h`/`stride`/`data_size`）；`writePixels(bytes)` 从仓颉 `Array<UInt8>` 拷入 |
 | **图片文件** | `Image.fromFile(parent, path)` | PNG（内置 lodepng + STDIO 文件系统），C 垫片负责补 `A:` 驱动器前缀；路径不存在抛 `LvglException` |
 | 色彩工具 | `Color.rgb565(r,g,b)` / `Color.argb8888(...)` | 产出与目标 `LV_COLOR_FORMAT` 匹配的字面量，避免手写移位出错 |
@@ -360,6 +363,7 @@ lvglcj/
 │   ├── ffi_widgets.cj         # FFI：各控件
 │   ├── ffi_draw.cj            # FFI：style / theme / mem / 垫片桥接
 │   ├── ffi_layout.cj          # FFI：flex / grid 布局 + 轨道常量
+│   ├── ffi_anim.cj            # FFI：lv_anim / timeline / 滚动 + 方向与滚动条常量
 │   ├── util.cj                # 友好 API：版本/颜色/异常/内存诊断
 │   ├── app.cj                 # 友好 API：App 生命周期、主循环、tick、定时器
 │   ├── display.cj             # 友好 API：Display（DRM/fbdev/SDL）+ 渲染模式/旋转
@@ -370,6 +374,7 @@ lvglcj/
 │   ├── widget_media.cj        # 友好 API：图像 / 图表 / 曲线 / 刻度 / LED
 │   ├── widget_rich.cj         # 友好 API：富文本 span / 日历 / 帧动画 / 拼音输入法
 │   ├── layout.cj              # 友好 API：flex / grid 布局（extend Widget）
+│   ├── anim.cj                # 友好 API：Anim / Timeline / 滚动（extend Widget）
 │   ├── style.cj               # 友好 API：Style / Theme / Font（含 FreeType 字体加载）
 │   ├── image.cj               # 友好 API：ImageBuffer / ImageDsc / Canvas
 │   └── test/                  # 单元测试（package lvglcj.test，cjpm test 发现）
@@ -430,7 +435,7 @@ lvglcj/
 > 状态说明：步骤 1–8 已完成并双平台实测：
 > - **Windows + MSYS2 UCRT64**：`./scripts/build-lvgl-sdl.ps1` → `lib/windows-x64/`；`cjpm build` 与 `examples` 的 `cjpm build --cfg` 均 0 error；九个示例逐一弹窗。
 > - **WSL（Ubuntu-dev）+ WSLg**：`scripts/build-lvgl-sdl.sh` → `lib/linux-x64/`；`cjpm build` / `cjpm build --cfg` 编译通过。
-> - **单测**：`cjpm test` 与 display 用例全部通过（当时 49 个用例；后续补了保活/布局/事件粒度回归，现为 84 个，最新数据见「单元测试」一节）。
+> - **单测**：`cjpm test` 与 display 用例全部通过（当时 49 个用例；后续补了保活/布局/事件粒度/动画回归，现为 91 个，最新数据见「单元测试」一节）。
 >   > 本机 WSLg 的 Xwayland 报 `your 131072x1 screen size is bogus`，窗口投不到 Windows 桌面，因此 WSL 侧只做**无窗口验证**（控件真实创建、日历日期读写、帧动画帧数组与播放路径均已覆盖），视觉确认以 Windows 截图与 Pi 真机截图为准。
 > - **交叉编译**：`scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`，`readelf` 校验 `ELF64 / Machine: AArch64`，DRM/evdev 符号已编入。
 > - **仓颉侧 aarch64 产物不需要单独的 aarch64 SDK**：用本机 linux-x64 的 cjc，`cjpm.toml` 里配 `--target aarch64-unknown-linux-gnu --sysroot /usr/aarch64-linux-gnu --static`，静态链接后 scp 到 Pi 直接运行（约 7 MB，不依赖目标机上的仓颉运行时）。
@@ -576,8 +581,8 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows / WSL，2026-10）：**84 个用例，39 passed / 45 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **45 个 display 用例全部 passed**
+实测结果（Windows / WSL，2026-10）：**91 个用例，39 passed / 52 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **52 个 display 用例全部 passed**
 （默认自动切到 `SDL_VIDEODRIVER=dummy`，在内存里渲染、**不弹窗口**；想看画面加 `LVGLCJ_TEST_REAL_WINDOW=1`）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
@@ -591,6 +596,7 @@ cjpm test
 | `widget_test.cj` | 几何（`updateLayout` 后读 `x/y/contentWidth`）、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、**`on` 精确过滤与 `onBubbled` 冒泡（含 flag 前置）**、**状态/part 选择器样式**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile**、**`Line` 顶点保活（refreshNow 真画一帧）/ `Image.setSource` 句柄保活**、**keep/keepOnly/keepBuf 槽位语义** | **是**，打 `@Tag[requires_display]` |
 | `keepalive_test.cj` | **try-with-resources 自动释放**、`close()` 幂等、借用视图 `close()` 静默、同一 `Style` 挂多控件删其一不影响其余、**泄漏追踪计数随生命周期变化**、`Line` 缓冲随控件释放 | **是**，打 `@Tag[requires_display]` |
 | `layout_test.cj` | **flex**：横排/竖排顺序、`gap`、`flexGrow` 分剩余、`SPACE_BETWEEN`、`ROW_WRAP` 换行、`trackCross` 的垂直居中语义；**grid**：`Fr` 权重（1:2 → 100/200）、`Px` 行高、`colSpan` 跨列、列/行描述符双槽保活。全部是 `updateLayout()` 后的坐标真断言 | **是**，打 `@Tag[requires_display]` |
+| `anim_test.cj` | 动画跑到底值正确 + 条目自动回收、`cancel` 幂等且不残留、`onCompleted` 只触发一次、缺 `exec` 抛异常；时间线两段按时序播放、`playTime()`、`close()` 后条目归零；滚动 `scrollTo`/`scrollBy`（**钉死 dy 与 `scrollY()` 反向**）、越界钳制、`SCROLLABLE` flag 不拦程序化滚动 | **是**，打 `@Tag[requires_display]` |
 
 需要 display 的用例默认被 `[profile.test].exclude-tags` 排除（本地不弹窗、无图形环境不报错）。
 注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：

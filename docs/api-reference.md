@@ -389,11 +389,12 @@ touch.attach(disp)
 
 ## 5. widget.cj —— 对象基类与控件
 
-> 源码已按主题拆成 6 个文件（同属 `package lvglcj`，对外 API 不变）：
+> 源码已按主题拆成 7 个文件（同属 `package lvglcj`，对外 API 不变）：
 > `widget.cj`（事件桥接 + `Widget` + `Container`）、`widget_basic.cj`（文本/按钮/值/选择）、
 > `widget_container.cj`（列表/表格/标签页/菜单/窗口）、`widget_media.cj`（图像/图表/曲线/刻度/LED）、
-> `widget_rich.cj`（富文本 span/日历/帧动画/拼音）、`layout.cj`（flex / grid 布局）。
-> 本节内容对应全部这 6 个文件（`layout.cj` 见「布局」子节）。
+> `widget_rich.cj`（富文本 span/日历/帧动画/拼音）、`layout.cj`（flex / grid 布局）、
+> `anim.cj`（值动画 / 时间线 / 滚动）。
+> 本节内容对应全部这 7 个文件（`layout.cj` 见「布局」、`anim.cj` 见「动画」「滚动」子节）。
 
 ### `Event`
 
@@ -583,6 +584,95 @@ body.place(col: 1, row: 1)
 >
 > `GridAlign` 的顺序是 START / **CENTER** / END，与 `FlexAlign` 的 START / **END** / CENTER **不同**，
 > 抄错不会编译失败，只会静默对齐到别处。
+
+### 动画 `Anim` / `Timeline`
+
+| 方法 | 说明 |
+|---|---|
+| `Anim.create()` | 新建一个配置（可 `start()` 多次，每次独立运行） |
+| `exec(cb: (Int32) -> Unit)` | 值回调，每帧一次 |
+| `from(v)` / `to(v)` | 起止值（**Int32**，LVGL 的动画值不是浮点） |
+| `duration(ms)` / `delay(ms)` | 单程时长 / 启动前延迟 |
+| `easing(Easing)` | `LINEAR` / `EASE_IN` / `EASE_OUT` / `EASE_IN_OUT` / `OVERSHOOT` / `BOUNCE` / `STEP` |
+| `repeat(count)` / `loop()` | 播放次数（**1 = 只播一次**）/ 无限循环 |
+| `repeatDelay(ms)` | 每轮之间的停顿 |
+| `playback(ms)` / `playbackDelay(ms)` | 正向播完再反向播一遍（呼吸灯） |
+| `onCompleted(cb)` | 全部结束后回调一次 |
+| `start(): AnimHandle` | 启动 |
+
+`AnimHandle`：`isRunning()` / `pause()` / `resume()` / `isPaused()` / `cancel()`（幂等）。
+另有 `Anim.liveCount()`（登记中的动画数，泄漏排查）与 `Anim.cancelAll()`（切场景时一键停）。
+
+```cangjie
+// 进度条 0→100，300ms 缓出
+Anim.create().exec { v => bar.value(v) }.from(0).to(100)
+    .duration(300).easing(Easing.EASE_OUT).start()
+
+// 呼吸灯：透明度 0↔255 来回，无限循环
+let h = Anim.create().exec { v => box.setStyleBgOpa(UInt8(v)) }
+    .from(40).to(255).duration(600).playback(600).loop().start()
+// 页面卸载：h.cancel()
+```
+
+时间线（多段动画按各自起始时刻排布）：
+
+| 方法 | 说明 |
+|---|---|
+| `Timeline.create()` | 新建 |
+| `add(anim, at: ms)` | 追加片段（`at` 会覆盖该动画自己的 `delay`） |
+| `start(): UInt32` | 从头播放，返回总时长 |
+| `pause()` / `setProgress(p: UInt16)` / `progress()` / `playTime()` | 暂停 / 手动拖进度 / 查进度 / 查总时长 |
+| `close()` | 释放（**必须显式调用**） |
+
+```cangjie
+let tl = Timeline.create()
+    .add(Anim.create().exec { v => box.pos(Int32(v), 0) }.to(100).duration(300), at: 0)
+    .add(Anim.create().exec { v => box.setStyleBgOpa(UInt8(v)) }.to(255).duration(200), at: 300)
+tl.start()
+tl.close()   // 切场景
+```
+
+> **值类型**：LVGL 的动画值是 `int32_t`（`lv_anim_set_values`），没有浮点。需要小数请自己
+> 做定点缩放（例如走 0..1000 再除以 10）。
+>
+> **生命周期**：`start()` 会拿一块 1 字节 token 当 LVGL 的 `var`，闭包登记在按 token 索引的
+> 条目表里；动画结束（**完成或被 cancel 都算**）时 LVGL 调 `deleted_cb`，在那里统一清条目 + `free` token。
+> 所以只播一次的动画**不需要**你释放任何东西。
+>
+> **`Timeline` 例外**：`lv_anim_timeline_delete` 只释放自己的描述符数组，**不会**触发各片段的
+> `deleted_cb`，所以必须 `close()`，否则片段闭包会泄漏。
+>
+> **不要指望终结器**：`AnimHandle` / `Timeline` 都没有 `~init` —— 终结器跑在 GC 线程，
+> 而取消动画要改 LVGL 的链表，跨线程调用就是竞态。
+
+### 滚动
+
+| 方法 | 说明 |
+|---|---|
+| `scrollable(on!: Bool = true)` | 开关 `LV_OBJ_FLAG_SCROLLABLE`（**只约束用户输入与 `scrollToView`**） |
+| `scrollBy(dx, dy, anim!)` | 相对滚动，`dx/dy` 是**内容位移**，与 `scrollX()/scrollY()` **反向** |
+| `scrollTo(x, y, anim!)` / `scrollToX` / `scrollToY` | 滚到绝对偏移 |
+| `scrollToView(anim!)` | 把自己滚进父容器可视区（长列表定位某一项） |
+| `scrollX()` / `scrollY()` | 当前偏移（内容已滚过多少） |
+| `scrollbarMode(LV_SCROLLBAR_MODE_*)` | 滚动条显示策略 |
+| `scrollDir(LV_DIR_*)` | 允许的方向（位标志） |
+| `stopScrollAnim()` / `isScrolling()` | 停住惯性滚动 / 是否正在滚 |
+
+```cangjie
+list.scrollable().scrollDir(LV_DIR_VER).scrollbarMode(LV_SCROLLBAR_MODE_AUTO)
+list.scrollToY(list.scrollY() + 120, anim: true)   // 向下滚 120（推荐写法）
+item.scrollToView(anim: true)                      // 定位到某一项
+```
+
+> **`scrollBy` 的方向是反的**：它接受的是「内容相对视口的位移」，所以
+> `scrollBy(0, -120)` 会让 `scrollY()` **增加** 120。LVGL 内部就是这么定义的
+> （`lv_obj_scroll_to_y(y)` 即 `scroll_by(-y + scrollY())`）。按直觉滚动请用 `scrollToY(scrollY() + n)`。
+>
+> **`scrollable(on: false)` 不会拦住程序化滚动**：`lv_obj_scroll_by` 根本不检查这个 flag
+> （实测确认）。它拦的是触摸/滚轮这类 indev 输入，以及 `scrollToView`。
+>
+> 滚不动先检查两件事：内容尺寸是否**大于**控件、`scrollDir` 是否允许该方向。
+> `anim: true` 走的是 LVGL 内部的 `lv_anim`，不占用本库的 `Anim` 条目表。
 
 ### 控件一览
 
@@ -927,6 +1017,9 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 | `LV_IME_PINYIN_MODE_K26`(0) / `K9`(1) / `K9_NUMBER`(2) | 拼音输入法键盘布局 |
 | `LV_IMAGE_ALIGN_*` | 图像对齐 |
 | `LV_RESULT_OK`(1) / `LV_RESULT_INVALID`(0) | 结果码（**注意与直觉相反**：OK=1） |
+| `LV_DIR_NONE`(0) / `LEFT`(1) / `RIGHT`(2) / `TOP`(4) / `BOTTOM`(8) / `HOR`(3) / `VER`(12) / `ALL`(15) | 滚动方向（位标志，可相或） |
+| `LV_SCROLLBAR_MODE_OFF`(0) / `ON`(1) / `ACTIVE`(2) / `AUTO`(3) | 滚动条显示策略 |
+| `LV_ANIM_REPEAT_INFINITE`(0xFFFFFFFF) | 动画无限循环（**1 才是「播一次」**，0 表示不重复） |
 
 ---
 

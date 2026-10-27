@@ -444,3 +444,36 @@ int32_t lvglcj_image_set_file_cjbindwrapper(lv_obj_t * img, const char * path)
     return LV_RESULT_INVALID;
 #endif
 }
+
+/* ------------------------------------------------------------------ */
+/* 动画                                                                */
+/* ------------------------------------------------------------------ */
+
+lv_anim_t * lvglcj_anim_new_cjbindwrapper(void)
+{
+    lv_anim_t * a = (lv_anim_t *)malloc(sizeof(lv_anim_t));
+    if(a == NULL) return NULL;
+    lv_anim_init(a);
+    return a;
+}
+
+void lvglcj_anim_free_cjbindwrapper(lv_anim_t * a)
+{
+    free(a);
+}
+
+void lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing)
+{
+    lv_anim_path_cb_t cb;
+    switch(easing) {
+        case 0: cb = lv_anim_path_linear;       break;
+        case 1: cb = lv_anim_path_ease_in;      break;
+        case 2: cb = lv_anim_path_ease_out;     break;
+        case 3: cb = lv_anim_path_ease_in_out;  break;
+        case 4: cb = lv_anim_path_overshoot;    break;
+        case 5: cb = lv_anim_path_bounce;       break;
+        case 6: cb = lv_anim_path_step;         break;
+        default: cb = lv_anim_path_linear;      break;
+    }
+    lv_anim_set_path_cb(a, cb);
+}

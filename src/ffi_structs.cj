@@ -60,9 +60,18 @@ public struct lv_event_t {}
 @C
 public struct lv_group_t {}
 
-/** 动画 */
+/**
+ * 动画（lv_anim_t 在 C 侧是**完整结构**，不是不透明句柄）。
+ *
+ * 仓颉侧既不声明字段、也不自行分配：结构大小随版本变化，猜错就是堆溢出。
+ * 分配/释放统一走垫片 `lvglcj_anim_new_cjbindwrapper` / `..._free_...`。
+ */
 @C
 public struct lv_anim_t {}
+
+/** 动画时间线（不透明，由 lv_anim_timeline_create 分配） */
+@C
+public struct lv_anim_timeline_t {}
 
 /** 图像解码器 */
 @C
