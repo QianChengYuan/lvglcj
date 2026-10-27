@@ -477,3 +477,23 @@ void lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing)
     }
     lv_anim_set_path_cb(a, cb);
 }
+
+/* ------------------------------------------------------------------ */
+/* 数据绑定（subject）                                                 */
+/* ------------------------------------------------------------------ */
+
+lv_subject_t * lvglcj_subject_new_int_cjbindwrapper(int32_t value)
+{
+    lv_subject_t * s = (lv_subject_t *)malloc(sizeof(lv_subject_t));
+    if(s == NULL) return NULL;
+    lv_subject_init_int(s, value);
+    return s;
+}
+
+void lvglcj_subject_free_cjbindwrapper(lv_subject_t * subject)
+{
+    if(subject == NULL) return;
+    /* deinit 只清观察者链表，不释放 subject 自身（内存是调用方给的） */
+    lv_subject_deinit(subject);
+    free(subject);
+}

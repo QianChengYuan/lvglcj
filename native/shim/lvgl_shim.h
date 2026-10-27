@@ -138,6 +138,15 @@ lv_anim_t * lvglcj_anim_new_cjbindwrapper(void);
 void        lvglcj_anim_free_cjbindwrapper(lv_anim_t * a);
 void        lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing);
 
+/* ------------------------------------------------------------------ */
+/* 数据绑定（subject）：lv_subject_t 同样是**完整结构**，仓颉侧不猜大小  */
+/*                                                                     */
+/* new 内部 malloc + lv_subject_init_int；free 内部 lv_subject_deinit   */
+/* （它会逐个 lv_observer_remove 掉挂在主题上的观察者）再 free 自身。    */
+/* ------------------------------------------------------------------ */
+lv_subject_t * lvglcj_subject_new_int_cjbindwrapper(int32_t value);
+void           lvglcj_subject_free_cjbindwrapper(lv_subject_t * subject);
+
 #ifdef __cplusplus
 }
 #endif

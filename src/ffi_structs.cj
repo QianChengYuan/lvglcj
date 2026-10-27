@@ -73,6 +73,19 @@ public struct lv_anim_t {}
 @C
 public struct lv_anim_timeline_t {}
 
+/**
+ * 数据绑定主题（`lv_subject_t` 在 C 侧是**完整结构**：类型 + 值联合体 + 观察者链表）。
+ *
+ * 与 `lv_anim_t` 同理，仓颉侧不声明字段、不自行分配，
+ * 分配/释放走垫片 `lvglcj_subject_new_int_cjbindwrapper`。
+ */
+@C
+public struct lv_subject_t {}
+
+/** 观察者（不透明，由 `lv_subject_add_observer*` 分配） */
+@C
+public struct lv_observer_t {}
+
 /** 图像解码器 */
 @C
 public struct lv_image_decoder_t {}

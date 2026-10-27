@@ -12,8 +12,9 @@
 - [5. widget.cj —— 对象基类与控件](#5-widgetcj--对象基类与控件)
 - [6. style.cj —— 样式 / 字体 / 主题](#6-stylecj--样式--字体--主题)
 - [7. image.cj —— 像素缓冲 / 图像 / 画布](#7-imagecj--像素缓冲--图像--画布)
-- [8. 常量速查](#8-常量速查)
-- [9. 边界与限制](#9-边界与限制)
+- [8. subject.cj —— 数据绑定（Subject / Observer）](#8-subjectcj--数据绑定subject--observer)
+- [9. 常量速查](#9-常量速查)
+- [10. 边界与限制](#10-边界与限制)
 
 ---
 
@@ -452,7 +453,7 @@ public class Event {
 ```cangjie
 // 精确订阅：只在这一种事件上被唤醒
 let sub = slider.on(LV_EVENT_VALUE_CHANGED) { _ =>
-    println("值变了：${slider.valueGet()}")   // 直接捕获控件对象，见 9.3
+    println("值变了：${slider.valueGet()}")   // 直接捕获控件对象，见 10.3
 }
 
 // 一屏一个处理器：子控件的事件冒泡到这里
@@ -957,7 +958,70 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 
 ---
 
-## 8. 常量速查
+## 8. subject.cj —— 数据绑定（`Subject` / `Observer`）
+
+LVGL 9 的 subject 是「一份值 + 一串观察者」。本库目前只做 **int 主题**（`lv_subject_init_int`），
+覆盖进度、温度、计数这类场景；float / string / pointer 主题尚未封装。
+
+三种用法，按省事程度排序：
+
+| 用法 | 注册方式 | 谁来释放 |
+|---|---|---|
+| 声明式绑定（推荐，零闭包） | `label.bindText(sub)` / `bar.bindValue(sub)` / `box.bindFlagIf(...)` | LVGL，随控件销毁 |
+| 绑到控件 + 闭包 | `sub.bind(box) { v => ... }` | LVGL 摘观察者，本库清闭包条目 |
+| 纯订阅 | `sub.subscribe { v => ... }` | **必须** `Observer.cancel()` 或 `Subject.close()` |
+
+### `Subject`
+
+| 方法 | 说明 |
+|---|---|
+| `Subject.of(initial: Int32): Subject` | 新建主题（`lv_subject_init_int`） |
+| `get(): Int32` / `previous(): Int32` | 当前值 / 上一次通知前的值 |
+| `set(v: Int32)` | 设值。**值没变就不通知**（LVGL 走 `notify_if_changed`），先按范围钳住 |
+| `add(delta: Int32)` | 原地加减；中间结果用 `Int64` 算，越界按边界钳住，不抛溢出异常 |
+| `setRange(min, max)` | 设取值上下限，之后的 `set` 超界被钳住。**不回写当前值** |
+| `notify()` | 值没变也强制通知一次（「刷新」语义） |
+| `subscribe(cb: (Int32) -> Unit): Observer` | 纯订阅，注册时**立即回调一次** |
+| `bind(w: Widget, cb: (Int32) -> Unit): Observer` | 绑到控件，控件删除时自动解绑，注册时同样立即回调一次 |
+| `isClosed()` / `close()` | 是否已释放 / 释放（幂等） |
+| `Subject.liveCount(): Int64` | 当前登记的**带闭包**观察者数（泄漏排查；声明式绑定不计） |
+
+### `Observer`
+
+`isActive()`（控件被删除后也会变 `false`）/ `cancel()`（幂等）。
+没有终结器：取消要改 LVGL 链表，不能跑在 GC 线程。
+
+### 声明式绑定（`extend` 在控件上）
+
+| 控件 | 方法 | 对应 C |
+|---|---|---|
+| `Label` | `bindText(sub, fmt!: String = "%d")` | `lv_label_bind_text` |
+| `Slider` / `Bar` / `Arc` / `Roller` / `Dropdown` | `bindValue(sub)` | `lv_*_bind_value` |
+| 任意 `Widget` | `bindChecked(sub)` | `lv_obj_bind_checked`（0 = 未选） |
+| 任意 `Widget` | `bindFlagIf(sub, flag, refValue, op!: CompareOp = EQ)` | `lv_obj_bind_flag_if_*` |
+| 任意 `Widget` | `bindStateIf(sub, state, refValue, op!: CompareOp = EQ)` | `lv_obj_bind_state_if_*` |
+
+`CompareOp`：`EQ` / `NOT_EQ` / `GT` / `GE` / `LT` / `LE`。
+
+```cangjie
+let temp = Subject.of(20)
+temp.setRange(0, 60)
+label.bindText(temp, fmt: "室温 %d°C")
+slider.bindValue(temp)
+box.bindFlagIf(temp, LV_OBJ_FLAG_HIDDEN, 0, op: CompareOp.NOT_EQ)  // 为 0 时隐藏
+temp.set(26)                    // 三处同时更新
+temp.close()                    // 页面销毁时；控件还在也不会悬垂
+```
+
+> **`fmt` 会被保活**：`lv_label_bind_text` 只存指针、不拷贝，本库把格式串复制到
+> `CStringHolder` 并登记进控件的保活表，控件删除后由 GC 回收。
+>
+> **不是闭包回调**：声明式绑定的观察者完全由 LVGL 持有，不经过本库的条目表，
+> 因此没有「忘记 cancel」的问题。
+
+---
+
+## 9. 常量速查
 
 本库只导出了常用的 `LV_*` 常量（不是 LVGL 全量）。需要其它值时，可对照 `lvgl-ref` 头文件的数值自行定义，或在 `src/ffi_obj.cj` 补一行 `public const`。
 
@@ -1023,15 +1087,15 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 
 ---
 
-## 9. 边界与限制
+## 10. 边界与限制
 
-### 9.1 不支持的能力
+### 10.1 不支持的能力
 
 - 视频播放（解码链路不在本库范围；可走 LVGL 的 GStreamer 源或 v4l2m2m → `ImageBuffer`）
 - GPU 加速渲染（当前为纯 CPU 软渲染）
 - 依赖异常跨语言传播做业务控制流（库会在 C 边界兜底捕获并交给 `App.onCallbackError`，但业务仍应显式处理可预期错误）
 
-### 9.2 需要自己配 `lv_conf.h`
+### 10.2 需要自己配 `lv_conf.h`
 
 下列能力取决于静态库编译时的开关（见 [编译指南](build-guide.md)）：
 
@@ -1047,7 +1111,7 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 
 开关没开时，对应 API 不会链接失败（都经垫片转发），而是运行期抛 `LvglException`。
 
-### 9.3 从 `Event` 反查控件
+### 10.3 从 `Event` 反查控件
 
 `Event.target()` 返回的是**通用 `Widget` 视图**（只保证句柄相同），拿不到 `Slider.valueGet()` 这类控件专属方法。仓颉没有通用的运行时向下转型，**推荐做法是在闭包里直接捕获控件对象**：
 
@@ -1073,7 +1137,7 @@ clickSub.cancel()
 
 `Event.target()` 与 `Screen` 都是借用视图：`finalize()` / `delete()` 会抛 `LvglException`，不会误删 LVGL 内部对象。
 
-### 9.3.1 回调里不能捕获局部可变变量
+### 10.3.1 回调里不能捕获局部可变变量
 
 这是仓颉的语言规则，不是本库的限制：**捕获了局部 `var` 的闭包不能作为值传出**（只能立即调用），否则编译报
 
@@ -1099,7 +1163,7 @@ btn.onClick {
 }
 ```
 
-### 9.4 控件覆盖情况
+### 10.4 控件覆盖情况
 
 已覆盖：`obj`(Container) / `label` / `button` / `image` / `slider` / `arc` / `bar` / `switch` / `checkbox` / `dropdown` / `roller` / `textarea` / `keyboard` / `list` / `table` / `tabview` / `menu` / `msgbox` / `win` / `spinbox` / `scale` / `line` / `led` / `chart` / `canvas` / `span` / `calendar` / `animimg` / `ime_pinyin`。
 
