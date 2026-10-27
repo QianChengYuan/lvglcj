@@ -4,18 +4,27 @@
 
 ## 0. 先搞清楚产物与选择方式
 
-三份静态库的目标格式互不兼容，必须分目录存放；**配置源与产物分离**（配置在 `native/config/`，`lib/` 下只有 `.a`）：
+四份静态库的目标格式互不兼容，必须分目录存放；**配置源与产物分离**（配置在 `native/config/`，`lib/` 下只有 `.a` + 溯源文件）：
 
 ```
 native/config/
 ├── sdl/lv_conf.h                       配置源（SDL 后端，Windows + WSL 共用；内含 _WIN32 分支）
-└── pi/lv_conf.h                        配置源（Pi：DRM + evdev + RGB565 + NEON）
+├── pi/lv_conf.h                        配置源（Pi：DRM + evdev + RGB565 + NEON）
+└── pi-sdl/lv_conf.h                    配置源（Pi 桌面：SDL + FreeType + 512KB 堆）
 
 lib/
-├── windows-x64/   liblvgl.a  liblvglcjshim.a     PE x86_64     Windows（MSYS2 UCRT64）
-├── linux-x64/     liblvgl.a  liblvglcjshim.a     ELF x86_64    WSL / Linux 桌面
-└── linux-arm64/   liblvgl.a  liblvglcjshim.a     ELF aarch64   Raspberry Pi（DRM + evdev）
+├── windows-x64/     liblvgl.a  liblvglcjshim.a   PE x86_64    Windows（MSYS2 UCRT64）
+├── linux-x64/       liblvgl.a  liblvglcjshim.a   ELF x86_64   WSL / Linux 桌面
+├── linux-arm64/     liblvgl.a  liblvglcjshim.a   ELF aarch64  Pi（DRM + evdev，tty 独占）
+└── linux-arm64-sdl/ liblvgl.a  liblvglcjshim.a   ELF aarch64  Pi（SDL 桌面 + FreeType 中文）
 ```
+
+每个目录里的两个文件是**溯源凭据**，换库或重编时必须同步更新：
+
+| 文件 | 内容 |
+|---|---|
+| `BUILD_INFO.md` | LVGL tag、配置源路径、配置快照 SHA-256、构建脚本、编译器、关键开关 |
+| `SHA256SUMS` | `.a` 的 SHA-256（CI 用 `sha256sum -c` / `Get-FileHash` 强制校验） |
 
 用哪个由环境变量 `LVGLCJ_LIB_DIR` 决定（`cjpm.toml` 里是 `[ffi.c] path = "${LVGLCJ_LIB_DIR}"`）：
 
@@ -28,6 +37,9 @@ export LVGLCJ_LIB_DIR=lib/linux-x64        # WSL / Linux
 
 > ⚠️ `cjpm` 支持 `${VAR}` 替换，但**不支持** `${VAR:-默认值}`。不设这个变量会直接报
 > `can not find the library 'lvgl' which is listed in 'ffi.c' field`。
+>
+> **不想记这些**：用 `scripts/build.ps1` / `scripts/build.sh`，它们按平台自动挑目录、
+> 转绝对路径（`examples` 是独立模块，相对路径会解析错）并注入变量，见 [第 7 节](#7-一键构建与检查脚本)。
 
 ## 1. 前置：仓颉 SDK 1.2.0
 
@@ -73,12 +85,18 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
 ### 2.3 编仓颉工程并运行
 
 ```powershell
-$env:LVGLCJ_LIB_DIR = "lib/windows-x64"
-cd examples
-cjpm build --cfg
+# 一行搞定：自动设 LVGLCJ_LIB_DIR（绝对路径）+ 编库 + 编 examples
+./scripts/build.ps1 -Examples
 
 $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH    # SDL2.dll / libfreetype-6.dll
-./target/release/bin/main.exe widgets
+./examples/target/release/bin/main.exe widgets
+```
+
+等价的手工命令：
+
+```powershell
+$env:LVGLCJ_LIB_DIR = "$PWD/lib/windows-x64"
+cd examples; cjpm build --cfg
 ```
 
 > 运行期 DLL 必须在 `PATH` 里（或在 exe 同目录）：`SDL2.dll`、`libfreetype-6.dll`。
@@ -122,9 +140,15 @@ export BUILD_DIR=/opt/build-sdl        # 可选：放原生盘，比 /mnt/c 快�
 ### 3.4 编仓颉工程并运行
 
 ```bash
-export LVGLCJ_LIB_DIR=lib/linux-x64
+bash scripts/build.sh --examples        # 自动设 LVGLCJ_LIB_DIR（绝对路径）+ 编库 + 编 examples
+./examples/target/release/bin/main widgets      # WSLg 直接弹窗
+```
+
+等价的手工命令：
+
+```bash
+export LVGLCJ_LIB_DIR="$PWD/lib/linux-x64"
 cd examples && cjpm build --cfg
-./target/release/bin/main widgets      # WSLg 直接弹窗
 ```
 
 若报 `error while loading shared libraries: libcangjie-runtime.so`，说明当前是**非登录 shell**，`/etc/profile.d/cangjie.sh` 没生效：
@@ -189,7 +213,7 @@ aarch64-linux-gnu-nm -g --defined-only lib/linux-arm64/liblvgl.a | grep -c evdev
 | `LV_USE_FS_STDIO` | **1** | **1**（文件访问走 `fopen`，驱动器字母 `'A'`；垫片负责拼 `A:<path>`） |
 | `LV_USE_IME_PINYIN` | **1** | **1**（`ImePinyin` 需它；LVGL 9.5 默认 0，改完要重编静态库） |
 
-### 4.5 仓颉侧交叉（待办）
+### 4.5 仓颉侧交叉（需要 linux-aarch64 版 SDK）
 
 linux-x64 SDK 的 `runtime/lib` 里只有 `linux_x86_64_cjnative`，直接链 `lib/linux-arm64` 会得到：
 
@@ -210,15 +234,36 @@ cjpm build --target=aarch64-unknown-linux-gnu --cfg
 file target/release/bin/main        # ELF 64-bit LSB, ARM aarch64
 ```
 
-若链接报 `Scrt1.o` / `crti.o` 找不到，是 cjc 没找到交叉 sysroot：
+若链接报 `Scrt1.o` / `crti.o` 找不到，是 cjc 没找到交叉 sysroot（cjc **没有** gcc 的 `-B`）：
 
 ```bash
---sysroot /usr/aarch64-linux-gnu \
--L /usr/aarch64-linux-gnu/lib \
--L /usr/lib/gcc-cross/aarch64-linux-gnu/13
+cjc main.cj -o main --target=aarch64-unknown-linux-gnu \
+    --sysroot /usr/aarch64-linux-gnu \
+    -L /usr/aarch64-linux-gnu/lib/ \
+    -L /usr/lib/gcc-cross/aarch64-linux-gnu/13
+file main    # 确认输出 ELF aarch64
 ```
 
-退路：直接在 Pi 上原生 `cjpm build`（慢但零坑）。
+交叉支持矩阵随 SDK 版本变化，1.2.0 上若 `--target` 链接失败多半就是上面这条 sysroot 问题。
+
+退路有二：① 在 WSL 里用 `qemu-user-static` + aarch64 rootfs 走「本地编译」；② 直接在 Pi 上 `cjpm build` 原生编译（慢但零坑）。
+
+平台分流的条件变量：`@When[os == "Linux" && arch == "aarch64"]`；1.2.0 起还有内置条件 `env`（cjc 实测取值 `gnu`/`ohos`/`simulator`/`android`），做 musl/gnu 细分时用它。自定义变量用 `--cfg "key=value"` 定义，但不可与内置条件（`os`/`arch`/`backend`/`env`/`debug`/`test`/`cjc_version`）重名。
+
+### 4.6 部署到 Pi
+
+```bash
+# 前置：lib/linux-arm64/ 或 lib/linux-arm64-sdl/ 已就绪（4.3）
+scp target/release/bin/main pi@raspberrypi.local:/home/pi/
+ssh pi@raspberrypi.local 'chmod +x ~/main && ~/main widgets'
+```
+
+目标机只需要设备节点权限，**不需要任何仓颉运行时**（发布时运行时已静态编进可执行文件）：
+
+```bash
+ls -l /dev/dri/card0 /dev/input/event*      # DRM 版需要
+sudo usermod -aG video,input $USER          # 免 sudo 访问设备，重新登录生效
+```
 
 ---
 
@@ -320,7 +365,67 @@ ar rcs liblvglcjshim.a lvgl_shim.o
 
 ---
 
-## 7. 编译期常见错误
+## 7. 一键构建与检查脚本
+
+三个脚本各管一件事，CI 用的也是它们（本地与 CI 判定一致）：
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/build.ps1` / `scripts/build.sh` | 选库目录 → 注入 `LVGLCJ_LIB_DIR`（绝对路径）→ `cjpm build`；可选 `-Examples/-Test/-DisplayTests` |
+| `scripts/build-lvgl-sdl.ps1` / `.sh` | 从源码重编 LVGL + 垫片（改 `lv_conf.h` 时用） |
+| `scripts/build-lvgl-asan.sh` | 编 **ASan 插桩版** LVGL + 垫片 → `.build/asan-lib`（不入库，仅 Linux/WSL） |
+| `scripts/asan-test.sh` | 在插桩库上跑单测（临时给 `link-option` 加 `-lasan`，退出自动还原） |
+| `scripts/check.ps1` | `cjfmt` 格式检查 + `cjlint` 静态检查（`-Fix` 就地格式化） |
+
+```powershell
+./scripts/build.ps1 -Test -Examples        # Windows
+./scripts/build.ps1 -DisplayTests          # requires_display 用例（SDL dummy 驱动）
+./scripts/check.ps1                        # 格式 + 静态检查
+```
+
+```bash
+bash scripts/build.sh --test --examples    # Linux / WSL
+bash scripts/build.sh --display-tests
+pwsh -NoProfile -File scripts/check.ps1    # 与 CI 完全相同
+```
+
+几点容易踩的：
+
+- **Windows 上 `PATH` 顺序**：SDK 的 `tools\bin` 里也有 `libwinpthread-1.dll`，必须让
+  `C:\msys64\ucrt64\bin` 排在前面，否则测试进程一启动就 `0xC0000139`（入口点找不到）；
+  `build.ps1` 会自动把它挪到首位。
+- **`LVGLCJ_LIB_DIR` 用绝对路径**：`examples` 是独立模块，`cjpm` 会把相对路径按**根模块**解析，
+  从 `examples/` 里构建时 `lib/linux-x64` 会找不到库。
+- **`requires_display` 用例**：默认被 `[profile.test]` 排除；`--display-tests` 会同时加
+  `--include-tags=requires_display --exclude-tags=notag`（只加前者仍会被排除项顶掉），
+  并设 `SDL_VIDEODRIVER=dummy` 让无头环境也能建出 display。
+
+### 内存检查（ASan，Linux/WSL）
+
+```bash
+# 1) 编插桩版 LVGL（需要 v9.5.0 源码；产物在 .build/，不入库）
+LVGL_SRC=/path/to/lvgl bash scripts/build-lvgl-asan.sh
+# 2) 跑用例（普通 + requires_display，最后自动还原 cjpm.toml）
+bash scripts/asan-test.sh
+```
+
+三条必须知道的：
+
+1. **预编译的 `lib/*/liblvgl.a` 没有插桩，ASan 对它内部无效。** 实测：拿未插桩的库跑
+   `Line` 用例、故意把顶点数组改回"立刻 free"，ASan 一点反应都没有；换成插桩库后立刻报
+   `heap-use-after-free ... in lv_line_event lv_line.c:226`。所以 ASan 必须自己重编 LVGL。
+2. **`link-option` 是直接交给 `ld` 的**，写 `-fsanitize=address` 会报
+   `-f may not be used without -shared`；要写 `-lasan`，并在运行时
+   `LD_PRELOAD=$(gcc -print-file-name=libasan.so)`（否则 ASan 因"运行时不排第一"中止）。
+3. **`ASAN_OPTIONS=detect_leaks=0`**：仓颉运行时的全局对象不会在退出时被当作 GCRoot，
+   LeakSanitizer 会误报一片。
+
+配合 `App.refreshNow()` 使用：`App.runOnce()` 可能只是跑了一遍定时器、还没到 33ms 的刷新时刻，
+绘制路径根本没执行 —— 想用 ASan 覆盖渲染代码，测试里必须显式 `App.refreshNow()` 强制画一帧。
+
+---
+
+## 8. 编译期常见错误
 
 | 报错 | 原因 | 解法 |
 |---|---|---|

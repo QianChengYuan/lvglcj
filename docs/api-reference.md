@@ -51,6 +51,31 @@ try {
 - 后台线程（网络/采集/解码）更新 UI 的唯一推荐方式是 `App.post { ... }`，任务线程安全入队，下一轮主循环执行；
 - `Widget.onEvent`、`EventSubscription.cancel()`、`TimerHandle` 的 `cancel/pause/resume/ready/setPeriod` 都会直接操作 LVGL，必须在主线程调用；后台线程请先 `App.post` 转交。
 
+**终结器不在主线程**（实测，仓颉 1.2.0 / Windows x64）：`~init` 跑在独立的 GC 线程上
+（探查程序里主线程 `Thread.currentThread.id == 1`，所有 `~init` 都是 `id == 2`）。
+因此库内对终结器做了区分处理：
+
+| 终结器 | 释放动作 | 跨线程安全性 |
+|---|---|---|
+| `Style.~init` | `lv_style_delete`（改 LVGL 样式链表） | **不安全** → 经 `App.releaseStyle()` 回投 UI 线程执行 |
+| `Line` / `Calendar` / `AnimImage` | `LibC.free` 顶点/日期/帧数组 | 纯堆释放，安全 |
+| `ImageBuffer` / `ImageDsc` | `free` 像素缓冲 / dsc | 纯堆释放，安全 |
+| `Canvas.~init` | `lv_draw_buf_destroy` | 只 free 缓冲，安全 |
+
+> 代价：如果 `App.run()` / `App.runOnce()` 一直没跑，回投的 `Style` 释放任务不会执行
+> （每个样式泄漏一两百字节）。这是有意取舍——宁可变慢泄漏，也不要在渲染中途改 LVGL 内部结构。
+
+**自检工具**：
+
+```cangjie
+App.isUIThread()                    // 当前线程是否 setup() 所在线程
+App.enableThreadAssert(true)        // 调试构建里打开跨线程断言
+App.assertUIThread("我的后台任务")   // 手动断言（打开断言后才生效）
+```
+
+打开断言后，`Widget.onEvent`、`Timer.every/once`、`Style.applyTo` 在非 UI 线程调用会直接抛
+`LvglException`，而不是留到运行时变成堆损坏。
+
 ### 0.4 句柄所有权
 
 | 类型 | 谁持有 | 释放方式 |
@@ -60,9 +85,21 @@ try {
 | `Event.target()` 返回的 `Widget` | **借用**（与源控件共享句柄） | **不要**释放；`finalize()` / `delete()` 会抛 `LvglException` |
 | `Style` | 仓颉对象持有 C 堆 `lv_style_t` | 析构自动 `lv_style_delete` |
 | `Font.load/systemCjk` | FreeType | `close()`，或随进程结束回收 |
-| `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free` |
-| `ImageDsc` | 垫片分配 | 析构自动释放 |
+| `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free`；产出 `ImageDsc` 后由 dsc 持有引用，交给控件即整链保活 |
+| `ImageDsc` | 垫片分配 | 析构自动释放；`Image.setSource` / `AnimImage.frames` 会在控件内保活引用 |
 | `Canvas` | `lv_draw_buf_t` | 析构自动 `lv_draw_buf_destroy` |
+
+#### 只保存指针的 API（生命周期契约）
+
+LVGL 有一批 API **只存指针、不拷贝内容**，而绘制发生在后续的 `lv_timer_handler` 里。本库能保活的都在类内部保活了，但底层缓冲仍需调用方自己持有：
+
+| API | LVGL 侧行为 | 本库做法 / 调用方义务 |
+|---|---|---|
+| `Line.setPoints` | 只存 `lv_point_t*` | 顶点数组存进 `Line` 字段，下次 `setPoints` 或对象销毁时释放 |
+| `Image.setSource` | 只存 `lv_image_dsc_t*` | 强引用 `ImageDsc`；dsc 又持有 `ImageBuffer` 引用（像素不拷贝）→ 整链保活 |
+| `AnimImage.frames` | 只存 dsc 指针数组 | 保活指针数组 + 每个 `ImageDsc`（同样顺带保住 `ImageBuffer`） |
+| `Calendar.highlight` | 只存日期数组 | 类内部保活，直到下次 `highlight` 或销毁 |
+| `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup（`Widget.keepStyle`），样式活到该控件销毁；临时对象写法安全 |
 
 ### 0.5 初始化顺序
 
@@ -140,14 +177,20 @@ println("内存 ${m.usedSize}/${m.totalSize} 字节（${m.usedPct}%），碎片 
 
 | 方法 | 说明 |
 |---|---|
-| `App.setup(): Unit` | `lv_init()` + 把单调时钟挂到 `lv_tick_set_cb`。**必须最先调用**；不挂 tick，画面第一帧后就会卡死 |
-| `App.shutdown(): Unit` | `lv_deinit()` 与资源回收 |
+| `App.setup(): Unit` | `lv_init()` + 把单调时钟挂到 `lv_tick_set_cb`。**必须最先调用**；不挂 tick，画面第一帧后就会卡死。幂等（`lv_init` 不可重入，重复调用直接返回） |
+| `App.shutdown(): Unit` | `lv_deinit()` 与资源回收。幂等；`deinit` 后此前持有的控件/样式句柄全部失效 |
 | `App.mainDisplay(): Display` | 默认 display 的包装 |
 | `App.post(task: () -> Unit): Unit` | **线程安全**投递 UI 任务；下一轮 `runOnce()` 在主线程执行，每轮最多 256 个 |
 | `App.onCallbackError(handler: (Exception) -> Unit): Unit` | 注册事件/定时器/post 任务的异常处理器 |
 | `App.clearCallbackErrorHandler(): Unit` | 恢复默认的控制台错误输出 |
+| `App.setDiagnostics(enabled: Bool): Unit` | 主循环诊断输出开关，**默认关闭**；打开后每 2 秒打印一轮次/最慢轮耗时 |
+| `App.diagnostics(): Bool` | 当前诊断开关状态 |
+| `App.isUIThread(): Bool` | 当前线程是否 `setup()` 所在线程（未 setup 时恒真） |
+| `App.enableThreadAssert(enabled: Bool): Unit` | 打开跨线程断言（默认关）；打开后注册类 API 在非 UI 线程调用即抛异常 |
+| `App.assertUIThread(what: String): Unit` | 手动断言当前在 UI 线程（仅在断言开关打开时生效） |
 | `App.runOnce(): UInt32` | 先执行 post 任务，再泵一次 `lv_timer_handler`，返回距下次定时器的毫秒数 |
-| `App.run(idleMs!: UInt32 = 5): Unit` | 主循环：`runOnce()` + `lv_sleep_ms(idleMs)`，直到 `App.stop()` |
+| `App.refreshNow(): Unit` | 立即同步渲染一帧（`lv_refr_now(NULL)`），不等刷新定时器；截图/测试用 |
+| `App.run(idleMs!: UInt32 = 5): Unit` | 主循环：`runOnce()` + 休眠 `min(idleMs, 距下个定时器)`，直到 `App.stop()` |
 | `App.stop(): Unit` | 请求退出主循环 |
 
 `idleMs` 的取舍：5 ms 足够流畅；设 0 会空转吃满一个核；低功耗场景可放到 10–16 ms。
@@ -229,7 +272,8 @@ main() {
 ```
 
 > - 若同时 `import std.sync.*`，`Timer` 会与 `std.sync.Timer` 重名；改用本库提供的别名 `LvglTimer.every(...)` / `LvglTimer.once(...)`；
-> - `once` 触发后自动失效，`handle.isActive()` 变为 `false`，无需手工清理；
+> - `every` 的周期必须 > 0（传 0 会抛 `LvglException`：LVGL 会每轮 handler 都触发，约 200 Hz）；
+> - `once` 触发后自动失效，`handle.isActive()` 变为 `false`，无需手工清理；`once(0)` 表示下一轮 handler 立即执行；
 > - `cancel()` 幂等，且在定时器回调内部调用不会造成双重 `lv_timer_delete`；
 > - `TimerHandle` 的操作直接调用 LVGL，必须在主线程执行；后台线程请 `App.post` 转交；
 > - 回调异常会交给 `App.onCallbackError`，不会中断其他定时器。
@@ -313,6 +357,11 @@ touch.attach(disp)
 ---
 
 ## 5. widget.cj —— 对象基类与控件
+
+> 源码已按主题拆成 5 个文件（同属 `package lvglcj`，对外 API 不变）：
+> `widget.cj`（事件桥接 + `Widget` + `Container`）、`widget_basic.cj`（文本/按钮/值/选择）、
+> `widget_container.cj`（列表/表格/标签页/菜单/窗口）、`widget_media.cj`（图像/图表/曲线/刻度/LED）、
+> `widget_rich.cj`（富文本 span/日历/帧动画/拼音）。本节内容对应全部这 5 个文件。
 
 ### `Event`
 
@@ -413,7 +462,7 @@ sub.cancel()
 | `Menu(parent)` | `lv_menu_create` | 无 |
 | `MsgBox(parent)` | `lv_msgbox_create` | 无 |
 | `Win(parent)` | `lv_win_create` | `addTitle(s): Label` |
-| `Image(parent)` | `lv_image_create` | `setSource(dsc)`、`rotate(deg)`、`scale(factor: Float64)` |
+| `Image(parent)` | `lv_image_create` | `setSource(dsc)`、`rotateDeg(deg: Float64)`、`rotateTenthDeg(0.1°)`、`scale(factor: Float64)` |
 | `Chart(parent)` | `lv_chart_create` | `pointCount(n)`、`range(axis, min, max)`、`addSeries(r,g,b): ChartSeries`、`setNextValue(series, v)` |
 | `Line(parent)` | `lv_line_create` | `setPoints(points: Array<(Int32, Int32)>)`（≥2 点） |
 | `Scale(parent)` | `lv_scale_create` | `range(min, max)` |
@@ -440,7 +489,10 @@ sg.textAlign(LV_TEXT_ALIGN_LEFT)
 sg.align(LV_ALIGN_TOP_LEFT, dx: 20, dy: 36)
 ```
 
-> **生命周期硬约束**：`lv_spangroup_set_span_style` 只保存 `lv_style_t*`，**`Style` 对象必须活得比片段久**——不要写成 `sg.add("x").style(Style().textColor(...))`（临时对象出作用域即析构，之后绘制会读到已释放内存）。
+> **生命周期**：`lv_spangroup_set_span_style` 只保存 `lv_style_t*`，但本库会把该 `Style`
+> 登记到所属 `SpanGroup` 上（`Widget.keepStyle`），所以
+> `sg.add("x").style(Style().textColor(...))` 这种临时对象写法是安全的 —— 样式活到 SpanGroup 销毁。
+> `Style.applyTo(obj)` 同理（登记到目标控件）。
 >
 > span 是**惰性排版**：`refresh()` 只打标记，真正换行在绘制时计算，因此 `set_size` 之后立刻 `width()` 读到的值不可靠。
 
@@ -486,13 +538,15 @@ ime.mode(LV_IME_PINYIN_MODE_K26)          // K26 / K9 / K9_NUMBER
 
 ```cangjie
 label.setTextFmt("滑块：%d", [35])     // → "滑块：35"
+label.setTextFmt("缺参数 %d %d", [7])  // 参数不够 → 整串保持原样（不崩、不抛异常）
 ```
 
-`Image.scale` 的 `factor` 是倍率（内部 `× 256` 转 LVGL 的 scale）：
+`Image.scale` 的 `factor` 是倍率（内部 `× 256` 转 LVGL 的 scale）。旋转有两个入口，别混用单位：
 
 ```cangjie
-img.scale(0.5)   // 缩小一半
-img.rotate(900)  // LVGL 的角度单位是 0.1°，900 = 90°
+img.scale(0.5)            // 缩小一半
+img.rotateDeg(90.0)       // **度**（逆时针），推荐用法
+img.rotateTenthDeg(900)   // LVGL 原生单位 0.1°：900 = 90°
 ```
 
 `Chart.range` 的 `axis`：`0` 主 Y 轴、`1` 次 Y 轴（9.5 把 v8 的 `lv_chart_set_range` 改成了 `lv_chart_set_axis_range`）。
@@ -610,6 +664,7 @@ Image(disp.screen()).setSource(buf.toImageDsc())
 ### `ImageDsc`
 
 `lv_image_dsc_t` 的包装，只能由 `ImageBuffer.toImageDsc()` 产出，直接传给 `Image.setSource`。
+它**没有** `bind()` 之类的写法：像素内容改了要自己调 `obj.invalidate()` 触发重绘。
 
 ### `Image <: Widget`（像素缓冲或图片文件）
 

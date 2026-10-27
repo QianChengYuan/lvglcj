@@ -29,6 +29,15 @@ export LVGLCJ_LIB_DIR=lib/linux-x64        # WSL / Linux
 
 `cjpm` 支持 `${VAR}` 替换但**不支持默认值** `${VAR:-xxx}`，所以这个变量必须显式给。
 
+不想手填就用脚本，它会按平台自动挑目录并转成绝对路径：
+
+```powershell
+./scripts/build.ps1            # Windows
+```
+```bash
+bash scripts/build.sh          # Linux / WSL
+```
+
 ### A2. `the environment variable '${...:-...}' is wrong in cjpm.toml`
 
 同上：`cjpm.toml` 里写了 shell 风格的默认值。只写 `${LVGLCJ_LIB_DIR}`，默认值放到脚本/文档里说明。
@@ -118,6 +127,19 @@ $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
 ```
 
 或把这两个 DLL 拷到 exe 同目录。
+
+### B2'. Windows 上进程一启动就 `0xC0000139`（或 `exit code 3221225785`，无任何输出）
+
+抓到了**错版本**的 `libwinpthread-1.dll` / `libstdc++-6.dll`：仓颉 SDK 的 `tools\bin` 里也有这些
+运行库，如果它在 `PATH` 里排在 `C:\msys64\ucrt64\bin` 之前就会被优先加载，入口点对不上。
+
+关键在**顺序**，不只是"有没有加进 PATH"：
+
+```powershell
+$env:PATH = "C:\msys64\ucrt64\bin;" + ($env:PATH -split ';' -ne 'C:\msys64\ucrt64\bin' -join ';')
+```
+
+`scripts/build.ps1` 会自动把 `ucrt64\bin` 挪到首位（不只是追加）。
 
 ### B3. `Input.evdev` 抛「创建设备失败」（桌面环境）
 
@@ -367,6 +389,41 @@ LvglTimer.every(1000) { ... }    // ✅ 等价于 lvglcj.Timer
 
 或者只导入需要的符号，避免 `std.sync.*` 通配。
 
+### G8. 后台线程里更新控件，偶尔花屏 / 崩在 LVGL 内部
+
+LVGL 不是线程安全的，所有 `lv_*` 必须在同一线程。后台线程（网络、采集、解码）只能走 `App.post`：
+
+```cangjie
+spawn {
+    let data = fetch()
+    App.post { label.text(data) }     // ✅ 下一轮主循环在主线程执行
+}
+```
+
+想在开发期就抓住误用，打开跨线程断言：
+
+```cangjie
+App.enableThreadAssert(true)          // 调试构建里开
+```
+
+打开后，`Widget.onEvent`、`Timer.every/once`、`Style.applyTo` 在非 UI 线程调用会抛
+`LvglException`（信息里带当前线程 id 和 UI 线程 id），而不是留到运行时变成堆损坏。
+
+### G9. 析构函数（`~init`）不在主线程执行
+
+**实测**：仓颉 1.2.0 的终结器跑在独立的 GC 线程（主线程 `Thread.currentThread.id == 1`，
+所有 `~init` 都是 `id == 2`）。所以"在析构里调 `lv_*`"是跨线程操作。
+
+库内的处理：
+
+- `Style.~init` 的 `lv_style_delete` 会改 LVGL 样式链表 → 经 `App.releaseStyle()`
+  回投到 UI 线程，下一轮 `runOnce()` 执行；
+- 只做 `LibC.free` / `lv_draw_buf_destroy` 的终结器（`Line`、`Calendar`、`AnimImage`、
+  `ImageBuffer`、`ImageDsc`、`Canvas`）跨线程安全，保持同步释放。
+
+副作用：如果从来不跑 `App.run()` / `App.runOnce()`，回投的样式释放任务不会执行
+（每个样式泄漏一两百字节）。这是刻意取舍 —— 宁可变慢泄漏，也不要在渲染中途动 LVGL 内部结构。
+
 ---
 
 ## G'. 单元测试相关
@@ -454,3 +511,21 @@ qemu-aarch64-static -L /usr/aarch64-linux-gnu ./main hello
 ```
 
 只能验证「能不能跑起来、逻辑对不对」，**不能**验证真实渲染性能。
+
+### H7. 想验证「没有悬垂指针 / 越界」这类内存问题
+
+用 ASan，但必须先把 **LVGL 本体**用 `-fsanitize=address` 重编，预编译的 `lib/*/liblvgl.a`
+没插桩、ASan 对它内部完全无效：
+
+```bash
+LVGL_SRC=/path/to/lvgl bash scripts/build-lvgl-asan.sh   # 产出 .build/asan-lib
+bash scripts/asan-test.sh
+```
+
+两个坑：
+
+- `cjpm.toml` 的 `link-option` 是直接交给 `ld` 的，不能写 `-fsanitize=address`
+  （`ld` 会报 `-f may not be used without -shared`），要写 `-lasan` 并
+  `LD_PRELOAD=$(gcc -print-file-name=libasan.so)`；`asan-test.sh` 都替你做了。
+- 测试里要 `App.refreshNow()` 强制画一帧：`App.runOnce()` 可能没到 33ms 刷新时刻，
+  绘制路径没执行，UAF 也就"测不出来"（这条是踩过的坑：旧版 `Line` 用例就是因为这个才一直绿）。

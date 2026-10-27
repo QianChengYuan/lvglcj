@@ -129,6 +129,13 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 - 业务线程（网络、采集、日志）不得直接触碰 `lv_obj_*`，统一用 `App.post { ... }` 投递到主线程任务队列；
 - flush 回调内禁止做仓颉侧的重量级分配（GC 停顿会直接体现在掉帧上）。
 
+调试点：`App.enableThreadAssert(true)` 后，`Widget.onEvent` / `Timer.every` / `Style.applyTo`
+在非 UI 线程调用会直接抛 `LvglException`（带两边的线程 id），不必等花屏或堆损坏才发现。
+
+> **注意终结器不在主线程**：实测仓颉 1.2.0 的 `~init` 跑在独立 GC 线程上（主线程 id=1、终结器 id=2）。
+> 因此 `Style` 的释放会回投到 UI 线程（`App.releaseStyle`）；只做 `free` 的终结器不受影响。
+> 细节见 `docs/api-reference.md` 的「0.3 线程模型」。
+
 ### 4. 友好 API 层（包 `lvglcj`）能力清单
 
 | 能力 | 入口 | 说明 |
@@ -197,10 +204,14 @@ native/config/
 └── pi/lv_conf.h                        # 配置源（Pi：DRM + evdev + RGB565）
 
 lib/                                    # 只有编译产物，不含配置
-├── windows-x64/  liblvgl.a  liblvglcjshim.a    # PE x86_64，Windows（MSYS2 UCRT64）
-├── linux-x64/    liblvgl.a  liblvglcjshim.a    # ELF x86_64，WSL（SDL2 + WSLg）
-└── linux-arm64/  liblvgl.a  liblvglcjshim.a    # ELF aarch64，Pi Zero 2 W（DRM + evdev）
+├── windows-x64/     liblvgl.a  liblvglcjshim.a   # PE x86_64，Windows（MSYS2 UCRT64）
+├── linux-x64/       liblvgl.a  liblvglcjshim.a   # ELF x86_64，WSL（SDL2 + WSLg）
+├── linux-arm64/     liblvgl.a  liblvglcjshim.a   # ELF aarch64，Pi（DRM + evdev，tty 独占）
+└── linux-arm64-sdl/ liblvgl.a  liblvglcjshim.a   # ELF aarch64，Pi（SDL 桌面 + FreeType 中文）
 ```
+
+每个目录都有 `BUILD_INFO.md`（LVGL tag / 配置源及其 SHA-256 快照 / 构建命令）
+与 `SHA256SUMS`（CI 强制校验），换库或重编后要一起更新。
 
 用哪个目录由环境变量 `LVGLCJ_LIB_DIR` 决定（见 `cjpm.toml` 的 `[ffi.c]`）：
 
@@ -208,9 +219,11 @@ lib/                                    # 只有编译产物，不含配置
 |---|---|
 | Windows 本机 | `$env:LVGLCJ_LIB_DIR = "lib/windows-x64"` |
 | WSL 本机验证 | `export LVGLCJ_LIB_DIR=lib/linux-x64` |
-| 交叉/真机 Pi | `export LVGLCJ_LIB_DIR=lib/linux-arm64` |
+| 交叉/真机 Pi | `export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl`（DRM 独占场景才用 `lib/linux-arm64`） |
 
 > 不设这个变量，cjpm 会报 `can not find the library 'lvgl' which is listed in 'ffi.c' field`——这是最容易踩的第一个坑。
+>
+> **不用手动记**：`scripts/build.ps1` / `scripts/build.sh` 会按平台自动挑目录、转绝对路径并注入变量，见「六、构建与运行步骤 → 一键构建」。
 
 > **Windows（MSYS2 UCRT64）已验证全链路跑通**：
 >
@@ -343,7 +356,11 @@ lvglcj/
 │   ├── app.cj                 # 友好 API：App 生命周期、主循环、tick、定时器
 │   ├── display.cj             # 友好 API：Display（DRM/fbdev/SDL）+ 渲染模式/旋转
 │   ├── input.cj               # 友好 API：Input（evdev）+ 触摸校准
-│   ├── widget.cj              # 友好 API：基础对象 + 常用控件 class
+│   ├── widget.cj              # 友好 API：事件桥接 + Widget 基类 + Container
+│   ├── widget_basic.cj        # 友好 API：文本 / 按钮 / 值 / 选择类控件
+│   ├── widget_container.cj    # 友好 API：列表 / 表格 / 标签页 / 菜单 / 窗口
+│   ├── widget_media.cj        # 友好 API：图像 / 图表 / 曲线 / 刻度 / LED
+│   ├── widget_rich.cj         # 友好 API：富文本 span / 日历 / 帧动画 / 拼音输入法
 │   ├── style.cj               # 友好 API：Style / Theme / Font（含 FreeType 字体加载）
 │   ├── image.cj               # 友好 API：ImageBuffer / ImageDsc / Canvas
 │   └── test/                  # 单元测试（package lvglcj.test，cjpm test 发现）
@@ -357,11 +374,14 @@ lvglcj/
 ├── lib/                       # 预编译静态库（按平台，.a 随仓库发布）
 │   ├── windows-x64/           # PE x86_64（MSYS2 UCRT64）
 │   ├── linux-x64/             # ELF x86_64（WSL / Linux 桌面）
-│   └── linux-arm64/           # ELF aarch64（Pi Zero 2 W）
+│   ├── linux-arm64/           # ELF aarch64（Pi：DRM + evdev，tty 独占）
+│   └── linux-arm64-sdl/       # ELF aarch64（Pi：SDL 桌面 + FreeType 中文）
 ├── scripts/                   # 构建 / 部署脚本（ps1 与 sh 成对命名）
+│   ├── build.ps1 / build.sh   # 一键构建：自动选库目录 + 注入 LVGLCJ_LIB_DIR → cjpm
 │   ├── build-lvgl-sdl.ps1     # Windows：编 LVGL + 垫片 → lib/windows-x64
 │   ├── build-lvgl-sdl.sh      # Linux/WSL：→ lib/linux-x64
 │   ├── build-lvgl-pi.sh       # 交叉：→ lib/linux-arm64
+│   ├── check.ps1              # cjfmt 格式检查 + cjlint 静态检查（本地与 CI 同一套）
 │   └── deploy-pi.sh           # scp 产物到 Pi + 远程运行
 ├── docs/                      # 使用文档（快速开始 / 编译指南 / API / FAQ）
 ├── .build/                    # LVGL 构建中间目录（.gitignore，可删）
@@ -410,36 +430,51 @@ lvglcj/
 
 ## 六、构建与运行步骤
 
+### 一键构建（推荐入口）
+
+预编译静态库已在 `lib/` 里，`LVGLCJ_LIB_DIR` 由脚本按平台自动挑（已有环境变量则沿用），
+并转成绝对路径（`examples` 是独立模块，相对路径会解析错）：
+
+```powershell
+# Windows（PowerShell 7）
+./scripts/build.ps1                       # 库
+./scripts/build.ps1 -Test -Examples       # + 单测 + examples
+./scripts/build.ps1 -DisplayTests         # requires_display 用例（SDL dummy 驱动）
+```
+
+```bash
+# Linux / WSL
+bash scripts/build.sh                     # 库
+bash scripts/build.sh --test --examples   # + 单测 + examples
+bash scripts/build.sh --display-tests     # requires_display 用例（SDL dummy 驱动）
+```
+
+两个脚本还会把 MSYS2 `ucrt64\bin` 挪到 `PATH` 最前面（Windows）：
+SDK 的 `tools\bin` 里也有 `libwinpthread-1.dll`，顺序反了会加载到不匹配的 DLL
+（症状是测试进程一起动就 `0xC0000139 入口点找不到`）。
+
+
 ### WSL 准备（Ubuntu 24.04，已实测）
 
 ```bash
-# 1) 本机验证 + 交叉编译所需的全部依赖
+# 1) 依赖（首次）
 sudo apt install build-essential cmake ninja-build pkg-config git curl \
-                 libsdl2-dev libfreetype-dev libevdev-dev \
-                 fonts-noto-cjk                      # WSLg 下显示中文必需
-sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+                 libsdl2-dev libfreetype-dev libevdev-dev fonts-noto-cjk
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu          # 交叉到 Pi
 
-# 2) arm64 版头文件（交叉编译 DRM/evdev 后端必需）
+# 2) arm64 头文件（交叉编译 DRM/evdev 后端必需）
 sudo dpkg --add-architecture arm64
-#    multiarch 关键：主源要标 Architectures: amd64，另加 ubuntu-ports 源标 Architectures: arm64
 sudo apt install libdrm-dev:arm64 libevdev-dev:arm64
 
-# 3) 仓颉 SDK：本机编译用 linux-x64，交叉到 Pi 用 linux-aarch64
-#    解压后按官方方式写进 profile，别只在当前终端 export
-tar -xzf cangjie-sdk-linux-x64-1.2.0.tar.gz -C /opt
-cat | sudo tee /etc/profile.d/cangjie.sh <<'EOF'
-export CANGJIE_HOME=/opt/cangjie_1.2.0/cangjie
-export PATH="$CANGJIE_HOME/bin:$CANGJIE_HOME/tools/bin:$PATH:$HOME/.cjpm/bin"
-export LD_LIBRARY_PATH="$CANGJIE_HOME/runtime/lib/linux_x86_64_cjnative:$CANGJIE_HOME/tools/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-EOF
-exec bash -l       # 重开登录 shell 后生效
-cjc -v             # 应显示 Cangjie Compiler: 1.2.0 (cjnative)
+# 3) 仓颉 SDK 解压到 /opt，并写进 /etc/profile.d/cangjie.sh（别只在当前终端 export）
 
-# 4) 编译 LVGL（首次或改 lv_conf 时；LVGL_DIR 可复用已有源码，省一次克隆）
+# 4) 编 LVGL（首次或改 lv_conf 时）
 export LVGL_DIR=/opt/lvgl-9.5.0
 ./scripts/build-lvgl-sdl.sh        # → lib/linux-x64/（WSL 本机验证）
 ./scripts/build-lvgl-pi.sh         # → lib/linux-arm64/（aarch64 交叉）
 ```
+
+> multiarch 源怎么配、arm64 头文件怎么摆、SDK profile 的完整写法：**`docs/build-guide.md` 第 3、4 章**。
 
 **WSL 上跑起来（SDL2 + WSLg）**：
 
@@ -451,32 +486,15 @@ cd examples && cjpm build --cfg
 
 必须注意的三点（都实测踩过）：
 
-1. **`LD_LIBRARY_PATH` 要生效**，否则启动报 `error while loading shared libraries: libcangjie-runtime.so`。非登录 shell（`wsl -d xxx -e bash -c ...`）不会读 `/etc/profile.d`，要么用 `bash -lc`，要么先 `source /etc/profile.d/cangjie.sh`；
-2. **`WSL_APPEND_PATH`**：WSL 默认把 Windows 的 `PATH` 注入 Linux，会把 `C:\CodeTools\cangjie\...\cjc.exe`、MSYS2 的 `ninja` 一起带进来，导致构建跑到 Windows 程序上。建议在 `/etc/wsl.conf` 里关掉：
-   ```ini
-   [interop]
-   appendWindowsPath = false
-   ```
-3. **中文显示**：无 CJK 字体时 `Font.trySystemCjk()` 找不到字体，会退回内置 1338 字子集，界面出现方框。装 `fonts-noto-cjk` 后路径 `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` 命中代码里的候选列表，中文即正常。
+1. **`LD_LIBRARY_PATH` 要生效**，否则启动报 `error while loading shared libraries: libcangjie-runtime.so`。非登录 shell（`wsl -d xxx -e bash -c ...`）不读 `/etc/profile.d`，用 `bash -lc` 或先 `source`；
+2. **关掉 Windows PATH 注入**：`/etc/wsl.conf` 里写 `[interop] appendWindowsPath = false`，否则 `cjc` / `ninja` 会跑到 Windows 程序上；
+3. **中文显示**：不装 `fonts-noto-cjk` 时 `Font.trySystemCjk()` 落空，界面方框（内置子集只有 1338 字）。
 
-> **交叉编译只完成了一半**：`lib/linux-arm64/` 的 C 库（LVGL + 垫片）已在 WSL 交叉编译通过并校验为 `ELF64 / AArch64`（含 DRM/evdev 符号）。但**仓颉侧交叉到 aarch64 还需要 linux-aarch64 版 SDK**——linux-x64 SDK 的 `runtime/lib` 里只有 `linux_x86_64_cjnative`，用 `LVGLCJ_LIB_DIR=lib/linux-arm64` 直接构建会得到：
-> ```
-> /usr/bin/ld: skipping incompatible .../lib/linux-arm64/liblvgl.a when searching for -llvgl
-> /usr/bin/ld: cannot find -llvgl: No such file or directory
-> ```
-> 装上 aarch64 SDK 后，用 `cjpm build --target=aarch64-unknown-linux-gnu`（或直接在 Pi 上原生 `cjpm build`）才能产出 aarch64 可执行文件。
-
-> 交叉编译支持矩阵随 SDK 版本变化。1.2.0 上若 `cjc --target=aarch64-unknown-linux-gnu` 链接失败，多半是没找到交叉工具链的 C 运行时目标文件（`Scrt1.o`/`crti.o`/`crtn.o`/`crtbeginS.o`/`crtendS.o`），用 `--sysroot` 指向交叉 sysroot、必要时以 `-L` 补库路径即可（cjc 没有 gcc 的 `-B` 选项）：
->
-> ```bash
-> cjc main.cj -o main --target=aarch64-unknown-linux-gnu \
->     --sysroot /usr/aarch64-linux-gnu \
->     -L /usr/aarch64-linux-gnu/lib/ \
->     -L /usr/lib/gcc-cross/aarch64-linux-gnu/11
-> file main    # 确认输出 ELF aarch64
-> ```
->
-> 仍不可用的退路有二：① 在 WSL 里用 `qemu-user-static` + aarch64 rootfs 走「本地编译」；② 直接在 Pi 上 `cjpm build` 原生编译（慢但零坑）。条件编译分流用 `@When[os == "Linux" && arch == "aarch64"]`；1.2.0 起还新增了内置条件变量 `env`（经 `cjc` 实测可取 `gnu`/`ohos`/`simulator`/`android` 等目标环境值），做 musl/gnu 细分时用它。自定义特性变量用 `--cfg "key=value"` 定义后同样可用于 `@When`，但变量名不可与内置条件（`os`/`arch`/`backend`/`env`/`debug`/`test`/`cjc_version`）重名。
+> **仓颉侧交叉需要 linux-aarch64 版 SDK**：linux-x64 SDK 的 `runtime/lib` 里只有 `linux_x86_64_cjnative`，
+> 直接链 `lib/linux-arm64` 会得到 `skipping incompatible .../liblvgl.a when searching for -llvgl`。
+> 装上 aarch64 SDK 后用 `cjpm build --target=aarch64-unknown-linux-gnu`；若链接报 `Scrt1.o`/`crti.o`
+> 找不到，补 `--sysroot /usr/aarch64-linux-gnu -L ...`（cjc 没有 gcc 的 `-B`）。
+> 完整命令、`@When` 平台分流与退路（qemu / Pi 原生编译）见 `docs/build-guide.md` 4.5。
 
 ### 构建 + 部署到 Pi
 
@@ -497,8 +515,8 @@ scp target/release/bin/main pi@raspberrypi.local:/home/pi/
 ssh pi@raspberrypi.local 'chmod +x ~/main && ~/main widgets'
 ```
 
-> 若交叉链接报 `Scrt1.o`/`crti.o` 找不到，是 cjc 没找到交叉 sysroot：
-> `--sysroot /usr/aarch64-linux-gnu -L /usr/aarch64-linux-gnu/lib -L /usr/lib/gcc-cross/aarch64-linux-gnu/13`（cjc 没有 gcc 的 `-B`）。实在不行就在 Pi 上原生 `cjpm build`（慢但零坑）。
+> 链接报 `Scrt1.o`/`crti.o` 找不到就补 `--sysroot`（cjc 没有 gcc 的 `-B`），完整命令见 `docs/build-guide.md` 4.5；
+> 实在不行就在 Pi 上原生 `cjpm build`（慢但零坑）。
 
 ### 真机运行
 
@@ -520,15 +538,8 @@ sudo usermod -aG video,input $USER    # 避免每次 sudo
 ### 本机验证（SDL：Windows 原生 / WSLg）
 
 ```bash
-# --cfg 是 cjpm 的自定义开关（不是内置选项），需先在两个 cjpm.toml 里声明。
-# 关键：cjpm 1.2.0 的键名只能是 cfg / cfg_1 / cfg_2 …，且 `--cfg` 只匹配字面量 cfg：
-#
-# [profile.customized-option]
-# cfg = "--cfg=\"lv_backend=sdl\""
-#
-# 之后代码里可用 @When[lv_backend == "sdl"] 分流（变量名避开内置条件名，如 lv_backend）
-cd examples && cjpm build --cfg
-./target/release/bin/main widgets    # Windows 弹窗 / WSLg 弹窗
+cd examples && cjpm build --cfg                    # --cfg 见 cjpm.toml 的 [profile.customized-option]
+./target/release/bin/main widgets                  # Windows 弹窗 / WSLg 弹窗
 ```
 
 Windows 上运行前必须把 DLL 目录加进 PATH（`SDL2.dll`、`libfreetype-6.dll`）：
@@ -556,8 +567,9 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows，2026-10）：**49 个用例，36 passed / 13 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **13 个窗口用例全部 passed**（会短暂弹出 320×240 的 LVGL 窗口）。
+实测结果（Windows / WSL，2026-10）：**54 个用例，39 passed / 15 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **15 个窗口用例全部 passed**
+（有桌面时短暂弹出 320×240 的 LVGL 窗口；`SDL_VIDEODRIVER=dummy` 时在内存里渲染，CI 就是这么跑的）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
 |---|---|---|
@@ -567,7 +579,7 @@ cjpm test
 | `image_buffer_test.cj` | 每像素字节数推导、`writePixels` 长度校验、`toImageDsc` | 否 |
 | `style_test.cj` | `Style` 链式、`Font` 工厂与 `close()` 语义 | 需 lv_init |
 | `app_test.cj` | `App.post`（含跨线程）、回调异常处理、`TimerHandle` 的 ready/cancel/一次性失效 | 否 |
-| `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile** | **是**，打 `@Tag[requires_display]` |
+| `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile**、**`Line` 顶点保活（refreshNow 真画一帧）/ `Image.setSource` 句柄保活** | **是**，打 `@Tag[requires_display]` |
 
 需要真实屏幕的用例默认被 `[profile.test].exclude-tags` 排除（无头环境开不了 SDL 窗口）。注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：
 
@@ -578,6 +590,17 @@ cjpm test --include-tags=requires_display --exclude-tags=notag   # 会真的弹�
 > `@Tag` 只接受**标识符**：写 `@Tag[requires_display]`，不能写成 `@Tag["requires_display"]`（宏会报 "Illegal parameters for @Tag"）。
 >
 > 另外 `@ExpectThrows` 是**括号**形式：`@ExpectThrows[LvglException](expr)`，不支持尾随 lambda。
+
+### 内存检查（ASan，Linux/WSL）
+
+```bash
+LVGL_SRC=/path/to/lvgl bash scripts/build-lvgl-asan.sh   # 插桩版 LVGL → .build/asan-lib
+bash scripts/asan-test.sh                                # 普通用例 + requires_display 用例
+```
+
+关键点：**必须重编 LVGL**。预编译的 `lib/*/liblvgl.a` 没插桩，LVGL 内部读已释放内存时 ASan
+什么都看不见（实测：注入 Line 的 UAF 后毫无反应；换插桩库立刻报 `heap-use-after-free @ lv_line.c:226`）。
+细节见 `docs/build-guide.md` 第 7 节。
 
 ### 代码检查（格式 + 静态）
 
@@ -625,112 +648,34 @@ lvglcj = { path = ".." }
 
 ---
 
-## 七、API 参考（友好层 `lvglcj`）
+## 七、API 速查（完整签名见 `docs/api-reference.md`）
 
-### util.cj — 工具
+一层一个文件组，下面只回答「从哪进去」；参数默认值、后端能力差异、所有权与线程约束都在
+`docs/api-reference.md`。
 
-| 方法 | 说明 |
-|---|---|
-| `version(): String` | LVGL 版本号文本（`9.5.0`） |
-| `Color.rgb565(r,g,b) / Color.argb8888(r,g,b,a)` | 按当前色深生成颜色字面量 |
-| `Perf.fps(): Float64` / `Perf.cpu(): Int32` | FPS 与 CPU 占用（需 `LV_USE_PERF_MONITOR`） |
-| `Mem.monitor(): MemStat` | 已用 / 峰值 / 碎片率 |
-| `sleepMs(ms)` / `tickNow(): UInt32` | 时间工具 |
+| 文件 | 主要入口 | 一句话 |
+|---|---|---|
+| `util.cj` | `version()` / `Color.*` / `Perf.fps()` / `Mem.monitor()` / `sleepMs()` | 版本、颜色字面量、性能与内存观测 |
+| `app.cj` | `App.setup()` → `App.run()`；`App.post()`；`Timer.every/once`（别名 `LvglTimer`） | 生命周期、主循环、跨线程投递、定时器 |
+| `display.cj` | `Display.sdl(w,h)` / `.drm()` / `.fbdev()`；`screen()`；`setRotation` / `setColorFormat` / `setForceRefresh` | 三种后端；默认参数只能按名字传（`Display.drm(card: "...")`） |
+| `input.cj` | `Input.evdev(...)` / `Input.discover()`；`attach()` / `calibrate()` / `swapAxes()` / `setCursor()` | evdev 输入（触摸/鼠标/键盘） |
+| `widget*.cj` | `Container(parent)` 打底，其余控件同名构造；`onEvent/offEvent`；`finalize()/delete()` | 控件（事件、标志、状态、释放） |
+| `style.cj` | `Style()` 链式 + `applyTo(obj)`；`Theme.default(...)`；`Font.montserrat/load/trySystemCjk` | 样式、主题、字体（中文必须 FreeType） |
+| `image.cj` | `ImageBuffer(w,h,cf)` → `toImageDsc()` → `Image.setSource`；`Canvas(w,h)` | 像素缓冲、图像源、画布 |
 
-### app.cj — 生命周期与主循环
+三处最容易踩的：
 
-| 方法 | 说明 |
-|---|---|
-| `App.setup()` | `lv_init()` + 挂接单调时钟（`lv_tick_set_cb`）（没有 `App.init()`） |
-| `App.mainDisplay(): Display` | 取默认 display |
-| `App.run(idleMs)` | 主循环：`lv_timer_handler()` + `lv_sleep_ms()` 到进程退出 |
-| `App.runOnce(): UInt32` | 先执行 `App.post` 任务，再手动泵一次；返回距下次定时器的毫秒数 |
-| `App.post(task)` | 任意线程安全投递 UI 任务，下一轮主循环在 UI 线程执行 |
-| `App.onCallbackError(handler)` / `clearCallbackErrorHandler()` | 事件/定时器/post 任务异常兜底钩子 |
-| `Timer.every(ms, cb)` / `Timer.once(ms, cb)`（别名 `LvglTimer`） | 返回 `TimerHandle`（`cancel/pause/resume/ready/setPeriod`）；cb 在主线程执行，可直接改控件；同时导入 `std.sync.*` 时用 `LvglTimer` 避免重名 |
-| `App.shutdown()` | `lv_deinit()` 与资源回收（没有 `App.deinit()`） |
+1. **中文必须换主题字体**：内置 `lv_font_source_han_sans_sc_16_cjk` 只有 1338 个字形，缺字显示方框；
+   而且只给 Screen `setFont` 不管用 —— 默认主题会显式给控件设 `text_font` 覆盖继承值，要连着主题一起换：
+   `Theme.default(primary, secondary, dark, f)` + `screen().setFont(f)`。
+   另外 `lv_init()` 内部已调过 `lv_freetype_init()`，别再自己调。
+2. **样式与图像句柄由库保活**：`Style().radius(8).applyTo(btn)`、`img.setSource(buf.toImageDsc())`
+   都可以传临时对象 —— 控件会把 `Style` / `ImageDsc`（进而 `ImageBuffer`）挂在自己身上。
+3. **`ImageDsc` 没有 `bind()`**：像素内容变了要自己 `obj.invalidate()` 触发重绘；
+   `img.setFile()` 解码失败只打 WARN、控件显示空白（`lv_image_set_src` 无返回码）。
 
-### display.cj — 显示
-
-| 方法 | 说明 |
-|---|---|
-| `Display.drm(card!: String = "/dev/dri/card0")` | 创建 DRM/KMS 显示，分辨率与色深从设备读取 |
-| `Display.fbdev(dev!: String = "/dev/fb0")` | fbdev 后端（无 DRM 时的兜底） |
-| `Display.sdl(w, h)` | SDL 后端（WSL/桌面模拟） |
-| `width() / height() / colorDepth()` | 实际生效的分辨率与色深 |
-| `setRotation(LV_DISPLAY_ROTATION_*)` | 90° 步进旋转（软旋转） |
-| `setColorFormat(cf)` | 切换 `RGB565` / `RGB565_SWAPPED` / `XRGB8888` / `L8` 等 |
-| `setRenderMode(PARTIAL/DIRECT/FULL)` | 渲染模式；fbdev 下可配合 `LV_LINUX_FBDEV_BUFFER_COUNT`（仅 fbdev 驱动提供） |
-| `setForceRefresh(on)` | 每次 flush 强制整屏刷新（fbdev 驱动能力，DRM/SDL 下无对应物；黑屏/花屏排障用，有性能代价） |
-| `screen(): Screen` | 当前活动屏幕（`lv_screen_active`） |
-
-> 仓颉仅**命名参数**可声明默认值（参数名带 `!`）：调用写 `Display.drm()` 或 `Display.drm(card: "/dev/dri/card1")`，不能按位置传参（`Display.drm("/dev/dri/card1")` 会编译报错）。
-
-> 三个后端在「当前构建没开对应驱动」时不会链接失败：DRM / fbdev 的调用都走垫片，垫片在 `LV_USE_LINUX_DRM=0` / `LV_USE_LINUX_FBDEV=0` 时返回 NULL，于是 `Display.drm()` 抛 `LvglException`（消息里会提示开关未启用）。所以 `try { Display.drm() } catch { Display.sdl(480, 272) }` 这种回退写法在 Windows 上也能正常编译运行。
-
-### input.cj — 输入
-
-| 方法 | 说明 |
-|---|---|
-| `Input.evdev(type, dev)` | 创建输入设备，`POINTER`（触摸/鼠标）或 `KEYPAD`（键盘） |
-| `Input.discover()` | 扫描 `/dev/input/` 并支持热插拔（`lv_evdev_discovery_start`） |
-| `attach(display)` | 绑定到指定 display（`lv_indev_set_display`） |
-| `calibrate(minX, minY, maxX, maxY)` | 原始坐标 → 屏幕坐标映射 |
-| `swapAxes(on)` | 修正 X/Y 颠倒的面板 |
-| `setCursor(obj)` | 为鼠标类设备挂光标对象 |
-
-### widget.cj — 对象与控件
-
-| 方法 | 说明 |
-|---|---|
-| `Container(parent)` | 基础容器（对应 `lv_obj_create`，没有 `Widget.create()`）；`size(w,h)` / `pos(x,y)` / `align(ALIGN, dx, dy)` / `center()` |
-| `Widget.setFont(f, part!)` | 所有控件（含 `Screen`）都有；`text_font` 可继承，设在 Screen/容器上即对该子树生效 |
-| `Label(parent)` → `text(s)` / `setTextFmt(fmt, ...)` / `color(c)` | 文本 |
-| `Button(parent)` → `onClick(cb)` / `checkable()` | 按钮；`onClick`/`onChanged`/`onValueChanged` 返回可取消的 `EventSubscription` |
-| `Image(parent)` → `setSource(dsc)` / `rotate(deg)` / `scale(x)` | 图像 |
-| `Slider / Arc / Bar / Switch / Checkbox / Dropdown / Roller / TextArea / Keyboard / List / Table / TabView / Menu / MsgBox / Chart / Canvas / Win` | 常用控件，逐个封装常用 setter |
-| `SpanGroup(parent)` → `add("文本").style(st)` | 富文本混排：一段文字里不同颜色/字号。`mode()` 定宽/撑开/换行，`textAlign()`、`overflow()`、`maxLines()` |
-| `Calendar(parent)` | `today(y,m,d)` / `showMonth(y,m)` / `headerArrow()`（9.5 默认无年月头部）/ `headerDropdown()` / `highlight(dates)` / `pressedDate()` / `onPressed(cb)` |
-| `AnimImage(parent)` | 帧动画：`frames(Array<ImageDsc>, durationMs!)` + `start()` + `repeatCount(n)`；帧数组与 dsc 由类内保活 |
-| `ImePinyin(parent)` | 拼音输入法：`bindKeyboard(kb)` + `mode(LV_IME_PINYIN_MODE_*)`，需 `LV_USE_IME_PINYIN=1` |
-| `addFlag(f)` / `removeFlag(f)` / `addState(s)` / `removeState(s)` | 标志与状态（hidden / clickable / checked / disabled …） |
-| `onEvent(mask, cb): EventSubscription` / `offEvent(sub)` / `sendEvent(code)` | 通用事件订阅、取消与主动触发；控件删除时订阅自动失效 |
-| `finalize()` / `delete()` / `isDeleted()` | 同步释放 / 异步释放（均幂等）/ 删除状态；借用视图调用前两者会抛异常 |
-
-### style.cj — 样式与主题
-
-| 方法 | 说明 |
-|---|---|
-| `Style()` | 新建样式；`bgColor/bgOpa/radius/borderWidth/borderColor/padAll/textFont/textColor/shadowWidth/shadowOpa` 链式设置 |
-| `Style.applyTo(obj, part)` | 应用到 `LV_PART_MAIN` / `SCROLLBAR` / `INDICATOR` / `KNOB` … |
-| `obj.setStyle*(v, part)` | 局部样式快捷接口 |
-| `Theme.default(primary, secondary, dark, font)` | 全局主题初始化与深浅色切换 |
-| `Font.montserrat(size)` / `Font.defaultFont()` | 内置点阵字体 / `LV_FONT_DEFAULT` |
-| `Font.load(path, size!, bold!)` | 按路径加载 TTF/TTC/OTF（需 `LV_USE_FREETYPE=1`），失败抛 `LvglException` |
-| `Font.systemCjk(size!, bold!)` / `Font.trySystemCjk(...)` | 自动找系统中文字体（Windows 雅黑/等线/黑体、Linux Noto CJK/文泉驿…），后者找不到返回 `None` |
-| `Font.close()` | 释放 `load`/`systemCjk` 得到的字体（内置字体不需要） |
-
-> **中文显示要点（实测）**：LVGL 内置的 `lv_font_source_han_sans_sc_16_cjk` 只有 1338 个字形，"滑块""总览"里的字可能缺，会显示成方框。要完整中文必须走 FreeType 加载系统字体；而且**只把字体挂在 Screen 上不管用**——LVGL 默认主题会显式给控件设 `text_font`，覆盖掉继承值，必须连着主题一起换：
->
-> ```cangjie
-> let f = Font.trySystemCjk(size: 16) ?? Font.defaultFont()
-> Theme.default((0x1E, 0x88, 0xE5), (0x0F, 0x9D, 0x58), false, f)   // 主题字体
-> disp.screen().setFont(f)                                          // 屏幕级兜底
-> ```
->
-> 另外 `lv_init()` 内部已经调用过 `lv_freetype_init()`，**不要**再自己调一次（会返回 "already initialized" 的 `LV_RESULT_INVALID`）。
-
-### image.cj — 像素缓冲 / 图像 / 画布
-
-| 类型 / 方法 | 说明 |
-|---|---|
-| `ImageBuffer(w, h, cf)` | 申请一块 `w × h × 每像素字节数` 的像素缓冲（由 LVGL 内存池或系统堆分配，仓颉侧只持 `CPointer<UInt8>`） |
-| `ImageBuffer.writePixels(bytes: Array<UInt8>)` | 从仓颉字节数组拷入（RGB565 / RGB888 / ARGB8888 由 `cf` 决定） |
-| `ImageBuffer.toImageDsc(): ImageDsc` | 生成 `lv_image_dsc_t`：`magic` / `cf` / `w` / `h` / `stride = w × 每像素字节数` / `data_size` 自动填好，可直接 `lv_image_set_src` |
-| `Image.setSource(dsc)` | 把 `ImageDsc` 喂给 `lv_image`；缓冲内容变化后调 `obj.invalidate()` 触发重绘（没有 `ImageDsc.bind()` 这种写法） |
-| `Image.fromFile(parent, path)` | 从图片文件创建图像控件（**PNG**，内置 lodepng + STDIO 文件系统）；路径不存在抛 `LvglException` |
-| `img.setFile(path)` | 换成另一张图片文件；解码失败时 LVGL 只打 WARN、控件显示空白（`lv_image_set_src` 无返回码） |
-| `Canvas(w, h)` | 画布：`fillBg` / `drawRect` / `drawText` / `setPx` |
+控件的完整清单（含 `Slider/Arc/Bar/Switch/Checkbox/Dropdown/Roller/TextArea/Keyboard/List/Table/TabView/Menu/MsgBox/Chart/Canvas/Win/SpanGroup/Calendar/AnimImage/ImePinyin`）与逐个方法见
+`docs/api-reference.md` 第 5 节。
 
 ---
 

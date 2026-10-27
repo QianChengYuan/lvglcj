@@ -28,7 +28,10 @@ lvglcjshim = { path = "${LVGLCJ_LIB_DIR}" }
 # "the customized key ... is wrong, the example is 'cfg_1'"），且 `--cfg` 只匹配名为
 # 字面量 cfg 的键，故这里用 cfg。
 # 注意：--cfg 中的条件变量名不可与内置条件（os/arch/backend/env/debug/test/cjc_version）重名，
-# 这里用 lv_backend；代码侧以 @When[lv_backend == "sdl"] 分流。
+# 这里用 lv_backend。
+# 现状：src/ 与 examples/ 里**没有任何 @When 使用它**，三个后端的差异全部由
+# native/config/{sdl,pi}/lv_conf.h + 链接不同的 .a 实现。保留本条只为让文档/脚本里的
+# `cjpm build --cfg` 能原样执行，并为将来"平台差异提到仓颉层"预留开关。
 cfg = "--cfg=\"lv_backend=sdl\""
 
 [profile.build]
