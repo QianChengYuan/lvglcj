@@ -10,16 +10,22 @@
 #   （amd64 机器上装 arm64 包需要 multiarch：主源标 Architectures: amd64，
 #     另加 ubuntu-ports 源标 Architectures: arm64）
 #
+# 配置里开了 LV_USE_FREETYPE，所以还需要 arm64 的 FreeType 头文件（只需头，
+# 链接由最终使用方补 -lfreetype）；从 Pi 上拷一次即可：
+#   mkdir -p /root/aarch64-sdl/include
+#   scp -r pi:/usr/include/freetype2 /root/aarch64-sdl/include/
+#
 # 用法：./scripts/build-lvgl-pi.sh
 #   环境变量（都可选）：
 #     LVGL_DIR=/path/to/lvgl      复用已有源码
 #     BUILD_DIR=/opt/build-pi     构建目录
 #     INC_DIR=/opt/arm64-include  架构无关头文件目录（默认自动准备）
+#     FT_INC=/root/aarch64-sdl/include  arm64 FreeType 头文件根目录（含 freetype2/）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SHIM_SRC="$ROOT/native/shim/lvgl_shim.c"
-CONF="$ROOT/native/config/pi/lv_conf.h"     # Pi 专用配置（DRM + evdev + RGB565）
+CONF="$ROOT/native/config/pi/lv_conf.h"     # Pi 专用配置（DRM + evdev + RGB565 + FreeType）
 TOOLCHAIN="$ROOT/cmake/toolchain-aarch64.cmake"
 LVGL_TAG="v9.5.0"
 LVGL_DIR="${LVGL_DIR:-$ROOT/lvgl}"
@@ -27,6 +33,7 @@ BUILD_DIR="${BUILD_DIR:-$ROOT/.build/pi}"
 OUT_DIR="${OUT_DIR:-$ROOT/lib/linux-arm64}"
 SHIM_BUILD="$BUILD_DIR/shim"
 CROSS="aarch64-linux-gnu-"
+FT_INC="${FT_INC:-/root/aarch64-sdl/include}"
 
 # libdrm / libevdev 的头文件是架构无关的，交叉 gcc 不会自动搜 /usr/include，
 # 所以把它们扁平拷到独立目录，避免把 host 的整个 /usr/include 塞进 include 路径。
@@ -35,6 +42,17 @@ INC_DIR="${INC_DIR:-/opt/arm64-include}"
 for f in "$SHIM_SRC" "$CONF" "$TOOLCHAIN"; do
   [ -f "$f" ] || { echo "缺少文件：$f" >&2; exit 1; }
 done
+
+# LV_USE_FREETYPE=1 时 lv_freetype.c 会 include <ft2build.h>，编译期就必须有头文件
+FT_CFLAGS=()
+if grep -qE '^#define[[:space:]]+LV_USE_FREETYPE[[:space:]]+1' "$CONF"; then
+  FT_CFLAGS=("-I$FT_INC/freetype2")
+  if [ ! -f "$FT_INC/freetype2/ft2build.h" ]; then
+    echo "配置开了 LV_USE_FREETYPE，但找不到 $FT_INC/freetype2/ft2build.h" >&2
+    echo "请从 Pi 拷一份，或设置 FT_INC=<含 freetype2/ 的根目录>（见脚本头部说明）" >&2
+    exit 1
+  fi
+fi
 
 if [ ! -d "$LVGL_DIR" ]; then
   echo "==> 克隆 LVGL $LVGL_TAG"
@@ -59,18 +77,19 @@ cmake -B "$BUILD_DIR" -G Ninja -S "$LVGL_DIR" \
   -DCONFIG_LV_BUILD_EXAMPLES=OFF -DCONFIG_LV_BUILD_DEMOS=OFF \
   -DCONFIG_LV_USE_THORVG_INTERNAL=OFF \
   -DLV_BUILD_CONF_PATH="$CONF" \
-  -DCMAKE_C_FLAGS="-I$INC_DIR -I$INC_DIR/libevdev-1.0" \
-  -DCMAKE_CXX_FLAGS="-I$INC_DIR -I$INC_DIR/libevdev-1.0"
+  -DCMAKE_C_FLAGS="-I$INC_DIR -I$INC_DIR/libevdev-1.0 ${FT_CFLAGS[*]:-}" \
+  -DCMAKE_CXX_FLAGS="-I$INC_DIR -I$INC_DIR/libevdev-1.0 ${FT_CFLAGS[*]:-}"
 
 echo "==> 编译 liblvgl.a"
 cmake --build "$BUILD_DIR"
 
 echo "==> 编译 C 垫片 liblvglcjshim.a"
-# lib/linux-arm64 的配置未开 LV_USE_FREETYPE，故无需 freetype 头文件；
-# 中文字形依赖内置思源黑体子集（要完整中文就在 Pi 上开 FREETYPE 并装 Noto CJK）。
+# 垫片只用 LVGL 的公开头，开了 FREETYPE 也只是跟着包含 lv_freetype.h，
+# 所以同样需要 freetype2 头；真正的 -lfreetype 由最终使用方链接。
 ${CROSS}gcc -c -O2 -fPIC -Wall -Wextra \
   -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE \
   -I"$LVGL_DIR" -I"$(dirname "$CONF")" -I"$INC_DIR" -I"$INC_DIR/libevdev-1.0" \
+  ${FT_CFLAGS[@]+"${FT_CFLAGS[@]}"} \
   -o "$SHIM_BUILD/lvgl_shim.o" \
   "$SHIM_SRC"
 ${CROSS}ar rcs "$OUT_DIR/liblvglcjshim.a" "$SHIM_BUILD/lvgl_shim.o"
@@ -84,3 +103,6 @@ ${CROSS}readelf -h "$OUT_DIR/liblvgl.a" 2>/dev/null | grep -m1 Machine
 echo
 echo "注意：仓颉侧交叉到 aarch64 需要 linux-aarch64 版 SDK（cjc --target），"
 echo "      linux-x64 SDK 只能本机编译；详见 docs/build-guide.md。"
+if [ ${#FT_CFLAGS[@]} -gt 0 ]; then
+  echo "      本次产物含 FreeType 字体后端：最终链接需在 Pi 上补 -lfreetype（libfreetype6-dev）。"
+fi
