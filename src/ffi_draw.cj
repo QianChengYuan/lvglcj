@@ -45,6 +45,18 @@ foreign func lv_obj_set_style_text_font(obj: CPointer<lv_obj_t>, value: CPointer
 
 foreign func lv_obj_set_style_radius(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
 
+foreign func lv_obj_set_style_border_color(obj: CPointer<lv_obj_t>, value: lv_color_t, selector: UInt32): Unit
+
+foreign func lv_obj_set_style_shadow_width(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
+
+foreign func lv_obj_set_style_pad_left(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
+
+foreign func lv_obj_set_style_pad_right(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
+
+foreign func lv_obj_set_style_pad_top(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
+
+foreign func lv_obj_set_style_pad_bottom(obj: CPointer<lv_obj_t>, value: Int32, selector: UInt32): Unit
+
 /* ---- 垫片：static inline 的 pad_all ---- */
 foreign func lv_style_set_pad_all_cjbindwrapper(style: CPointer<lv_style_t>, value: Int32): Unit
 

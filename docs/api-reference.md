@@ -123,6 +123,7 @@ LVGL 有一批 API **只存指针、不拷贝内容**，而绘制发生在后续
 | `AnimImage.frames` | 只存 dsc 指针数组 | 指针数组 + 每个 `ImageDsc` 都登记（同样顺带保住 `ImageBuffer`） |
 | `Calendar.highlight` | 只存日期数组 | 缓冲登记，直到下次 `highlight` 或控件删除 |
 | `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup；同一个 `Style` 挂多个控件时各自持有引用，删一个不影响其余 |
+| `Widget.grid` | 只存列/行描述符数组 | 两块数组各占一个保活槽（`slot: 0` / `slot: 1`）；换 `grid()` 时一起释放 |
 
 > 旧版本把这些数据存在包装对象的字段里，靠"变量活到控件销毁"这条约定维持 —— 一旦包装对象先被 GC
 > 就是偶发花屏/UAF。现在这条约定不再需要。
@@ -388,17 +389,19 @@ touch.attach(disp)
 
 ## 5. widget.cj —— 对象基类与控件
 
-> 源码已按主题拆成 5 个文件（同属 `package lvglcj`，对外 API 不变）：
+> 源码已按主题拆成 6 个文件（同属 `package lvglcj`，对外 API 不变）：
 > `widget.cj`（事件桥接 + `Widget` + `Container`）、`widget_basic.cj`（文本/按钮/值/选择）、
 > `widget_container.cj`（列表/表格/标签页/菜单/窗口）、`widget_media.cj`（图像/图表/曲线/刻度/LED）、
-> `widget_rich.cj`（富文本 span/日历/帧动画/拼音）。本节内容对应全部这 5 个文件。
+> `widget_rich.cj`（富文本 span/日历/帧动画/拼音）、`layout.cj`（flex / grid 布局）。
+> 本节内容对应全部这 6 个文件（`layout.cj` 见「布局」子节）。
 
 ### `Event`
 
 ```cangjie
 public class Event {
     public func code(): UInt32        // LV_EVENT_*
-    public func target(): Widget      // 借用：不要 finalize
+    public func target(): Widget      // 真正发出事件的控件（冒泡时也不变）；借用：不要 finalize
+    public func currentTarget(): Widget  // 当前回调所属控件；与 target 不同＝事件冒泡上来的
 }
 ```
 
@@ -413,6 +416,12 @@ public class Event {
 | `align(a: UInt32, dx!: Int32 = 0, dy!: Int32 = 0)` | 相对父对象对齐，`LV_ALIGN_*` |
 | `center()` | 居中 |
 | `width()` / `height(): Int32` | 实际宽高 |
+| `x()` / `y(): Int32` | 相对**父内容区**的左上角坐标 |
+| `contentWidth()` / `contentHeight(): Int32` | 内容区尺寸（已扣掉 padding / 边框） |
+| `updateLayout()` | 立刻重算子树布局（等价 `lv_obj_update_layout`） |
+
+> flex / grid 的子对象位置是**惰性**计算的：改完属性后 `x()` / `y()` 读到的仍是旧值。
+> 界面里下一帧会自动算；**测试里必须显式** `updateLayout()`，否则断言全部读到旧值。
 
 **标志与状态**
 
@@ -426,6 +435,9 @@ public class Event {
 | 方法 | 说明 |
 |---|---|
 | `onEvent(mask: UInt32, cb: (Event) -> Unit): EventSubscription` | 订阅事件，`mask` 为 `LV_EVENT_*` 或 `LV_EVENT_ALL` |
+| `on(code: UInt32, cb: (Event) -> Unit): EventSubscription` | 精确订阅一个事件码，只收**本控件自己发出**的 |
+| `onBubbled(code: UInt32, cb: (Event) -> Unit): EventSubscription` | 订阅**子孙冒泡上来**的事件，只收 `target != 本控件` 的 |
+| `bubble(on!: Bool = true)` | 打开/关闭 `LV_OBJ_FLAG_EVENT_BUBBLE`（本控件发出的事件继续传给父对象） |
 | `offEvent(sub: EventSubscription)` | 取消订阅，等价于 `sub.cancel()` |
 | `sendEvent(code: UInt32)` | 主动触发事件（测试/模拟输入） |
 
@@ -437,26 +449,49 @@ public class Event {
 | `cancel(): Unit` | 取消订阅；幂等，回调内部取消也安全 |
 
 ```cangjie
-let sub = slider.onEvent(LV_EVENT_VALUE_CHANGED) { _ =>
+// 精确订阅：只在这一种事件上被唤醒
+let sub = slider.on(LV_EVENT_VALUE_CHANGED) { _ =>
     println("值变了：${slider.valueGet()}")   // 直接捕获控件对象，见 9.3
 }
+
+// 一屏一个处理器：子控件的事件冒泡到这里
+list.onBubbled(LV_EVENT_CLICKED) { e =>
+    println("点了：${e.target().width()}")    // target 仍是被点的那个子控件
+}
+item.bubble()                                // 子控件必须打开冒泡标志
 
 // 页面卸载、条件不再需要时：
 sub.cancel()
 ```
 
-> 每个控件只向 LVGL 注册一个 `LV_EVENT_ALL` C 回调，仓颉侧按 mask 过滤；控件收到 `LV_EVENT_DELETE`（含父对象递归删除）时会回收整张订阅表，不会长期泄漏。
+> 每个控件只向 LVGL 注册一个 `LV_EVENT_ALL` C 回调，仓颉侧按 `code` + 是否冒泡过滤；控件收到 `LV_EVENT_DELETE`（含父对象递归删除）时会回收整张订阅表，不会长期泄漏。
 >
-> `onEvent`、`cancel` 都需要改 LVGL 对象，必须在主线程调用。
+> `on` 与 `onBubbled` 的条目**互斥**：同一个控件上两种都挂，不会互相收到对方的事件。
+>
+> 冒泡是 LVGL 侧的行为，前提是**发出事件的那个子控件**带 `LV_OBJ_FLAG_EVENT_BUBBLE`（`child.bubble()`）；只给父对象调用 `onBubbled` 而不给子控件开标志，父对象什么也收不到。
+>
+> `on`/`onBubbled`/`cancel` 都需要改 LVGL 对象，必须在主线程调用。
 
 **局部样式快捷接口**
 
+所有 setter 都接受 `part!`（`LV_PART_*`）与 `state!`（`LV_STATE_*`，默认 `DEFAULT`）：
+
 | 方法 | 说明 |
 |---|---|
-| `setStyleBgColor(r, g, b, part!: UInt32 = LV_PART_MAIN)` | 背景色 |
-| `setStyleTextColor(r, g, b, part!)` | 文字色 |
-| `setStyleRadius(radius, part!)` | 圆角 |
-| `setFont(f: Font, part!)` | 字体；`text_font` 可继承，设在 Screen/容器上即对该子树生效 |
+| `setStyleBgColor(r, g, b, part!, state!)` | 背景色 |
+| `setStyleBgOpa(opa: UInt8, part!, state!)` | 背景不透明度 |
+| `setStyleTextColor(r, g, b, part!, state!)` | 文字色 |
+| `setStyleRadius(radius: Int32, part!, state!)` | 圆角 |
+| `setStyleBorderWidth(w: Int32, part!, state!)` / `setStyleBorderColor(r,g,b, part!, state!)` | 边框 |
+| `setStylePadAll(pad: Int32, part!, state!)` | 四边内边距（内容与边框之间） |
+| `setStyleGap(gap: Int32, part!, state!)` | 子对象间距（`pad_row` / `pad_column`，**不受 padAll 影响**） |
+| `setStyleShadowWidth(w: Int32, part!, state!)` | 阴影宽度 |
+| `setFont(f: Font, part!, state!)` | 字体；`text_font` 可继承，设在 Screen/容器上即对该子树生效 |
+
+```cangjie
+btn.setStyleBgColor(0xD0, 0xD0, 0xD0, state: LV_STATE_PRESSED)      // 按下态
+slider.setStyleBgColor(0x21, 0x96, 0xF3, part: LV_PART_INDICATOR)   // 只改指示条
+```
 
 **生命周期**
 
@@ -468,6 +503,86 @@ sub.cancel()
 | `invalidate()` | 内容变化后触发重绘 |
 
 > 同一个包装对象上重复 `finalize()` / `delete()` 不会重复释放 C 指针；但**不要**在删除后继续调用其它 `lv_*` 方法。借用视图（`Screen`、`Event.target()`）的 `finalize()` / `delete()` 会直接抛异常，避免误删屏幕或事件源。
+
+### 保活（给「LVGL 只存指针」的 API 用）
+
+| 方法 | 说明 |
+|---|---|
+| `keep(obj: Object): Widget` | **追加**保活：该对象活到本控件被 LVGL 删除为止 |
+| `keepOnly(objs: ArrayList<Object>): Widget` | **替换**保活：先清空再登记（换帧序列、换图像源） |
+| `keepBuf(buf: CPointer<Unit>, slot!: UInt32 = 0): Widget` | 接管一块 `LibC.malloc` 缓冲的**所有权**，控件删除时 free；同一 `slot` 再次调用会立刻 free 旧缓冲 |
+| `keptCount(): Int64` / `keptBufs(): Int64` | 当前保活的对象数 / 缓冲数（调试与测试断言用） |
+
+为什么需要它：很多 LVGL API 只保存指针、不拷贝内容（`lv_obj_add_style`、`lv_line_set_points`、
+`lv_image_set_src`、`lv_spangroup_set_span_style`、`lv_style_set_grid_column_dsc_array` …）。
+**不能**把引用挂在仓颉包装对象的字段上——仓颉 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
+包装对象完全可能先于 `lv_obj` 被回收，而 `lv_obj` 还在屏上。保活表以 `lv_obj` 地址为键，
+由 `LV_EVENT_DELETE` 统一收尾。
+
+库内部已对 `Style` / `ImageDsc` / 各类缓冲自动登记；**写自定义控件**时才需要手动调用。
+
+`slot` 的用途是「同一个控件上要同时保活多块数组」：grid 的列描述符与行描述符就是两块，
+分别占 `slot: 0` / `slot: 1`（`Widget.grid()` 内部就是这么做的）。
+
+```cangjie
+// 自己接一个「LVGL 只存指针」的 API
+let buf = unsafe { LibC.malloc<Int32>(count: 4) }
+// ... 填充 buf ...
+someLvglApi(raw(), buf)
+keepBuf(CPointer<Unit>(buf))   // 所有权交给控件，别再自己 free
+```
+
+### 布局（flex / grid）
+
+flex / grid 都是**挂在父对象上**的：改父对象的属性，子对象位置由父对象在布局更新时统一计算。
+
+**flex**
+
+| 方法 | 说明 |
+|---|---|
+| `flex(flow: FlexFlow, gap!: Int32 = 0)` | 设置主轴方向与间距（等价 `lv_obj_set_flex_flow`） |
+| `flexAlign(mainPlace: FlexAlign, cross!: FlexAlign = START, trackCross!: FlexAlign = START)` | 主轴分布 / 轨道内交叉轴对齐 / 轨道整体分布 |
+| `flexGrow(grow: UInt8)` | 本子对象吃掉剩余空间的比例（父对象需是 flex） |
+
+```cangjie
+root.flex(FlexFlow.ROW, gap: 8)
+    .flexAlign(FlexAlign.SPACE_BETWEEN, trackCross: FlexAlign.CENTER)
+    .setStylePadAll(12)
+left.flexGrow(1)      // 吃掉剩余宽度
+right.size(80, 0)
+```
+
+> **垂直居中用 `trackCross`，不是 `cross`。** flex 的轨道交叉尺寸取的是该行最高子对象的高度
+> （`lv_flex.c` 的 `track_cross_size = LV_MAX(...)`），单行时轨道和子对象一样高，
+> `cross: CENTER` 算出来仍是 0；把整条轨道在容器里居中才是想要的视觉效果。
+> `cross` 只在「一行里有高矮不一的子对象」时才看得出差别。
+
+**grid**
+
+| 方法 | 说明 |
+|---|---|
+| `grid(cols: Array<GridSize>, rows: Array<GridSize>)` | 一次设置列/行描述符（内部切到 grid 布局） |
+| `gridAlign(col!: GridAlign, row!: GridAlign = START)` | 轨道整体在容器里的分布 |
+| `place(col!: Int32, row!: Int32, colSpan!: Int32 = 1, rowSpan!: Int32 = 1, colAlign!: GridAlign = STRETCH, rowAlign!: GridAlign = STRETCH)` | 把本控件放进某个单元格 |
+
+```cangjie
+grid.grid([GridSize.Fr(1), GridSize.Fr(2)], [GridSize.Content, GridSize.Px(40)])
+    .gridAlign(col: GridAlign.STRETCH, row: GridAlign.STRETCH)
+title.place(col: 0, row: 0, colSpan: 2)
+body.place(col: 1, row: 1)
+```
+
+`GridSize`：`CONTENT`（由内容撑开）/ `Fr(n)`（按权重分剩余空间）/ `Px(n)`（固定像素）。
+`Fr` 走 LVGL 官方的 `lv_grid_fr()` 绑定入口，不在仓颉侧重算 `LV_COORD_MAX - 100 + n`。
+
+> **列与行必须一起给。** LVGL 的 `lv_obj_set_grid_dsc_array` 一次设置两个数组，
+> 拆成先列后行两步时，中间那一刻另半边是 `NULL`，布局会算出空结果。所以这里只有一个入口。
+>
+> 两块描述符数组都**不拷贝**，由 `keepBuf` 占 `slot: 0` / `slot: 1` 保管；
+> 换一次 `grid()` 会把两块旧数组一起释放。
+>
+> `GridAlign` 的顺序是 START / **CENTER** / END，与 `FlexAlign` 的 START / **END** / CENTER **不同**，
+> 抄错不会编译失败，只会静默对齐到别处。
 
 ### 控件一览
 
@@ -604,9 +719,20 @@ s.applyTo(button)
 | `textFont(f: Font)` / `textColor(r,g,b)` | 字体 / 文字色 |
 | `shadowWidth(w)` / `shadowOpa(opa)` | 阴影（9.5 原生渲染） |
 | `blurRadius(r)` | 模糊（9.5 原生；很吃 CPU，小面积用） |
-| `applyTo(obj: Widget, part!: UInt32 = LV_PART_MAIN)` | 应用到控件的指定部位 |
+| `applyTo(obj: Widget, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT)` | 应用到指定部位 / 状态（selector = `part \| state`） |
 
-> `Style` 对象**必须保持存活**：LVGL 只存指针不拷贝。局部变量出作用域后样式对象可能被回收，导致渲染异常。建议作为字段/全局持有。
+> `Style` 对象**不需要自己保活**：`applyTo()` 会把它登记到目标控件上（`Widget.keepStyle`），
+> 活到那个控件被 LVGL 删除为止。所以 `Style().radius(8).applyTo(btn)` 这种临时对象写法是安全的。
+> 同一个 `Style` 挂到多个控件时各自独立持有引用，删其中一个不影响其余。
+
+**状态样式**：同一个属性可以按状态各挂一份，LVGL 在绘制时按控件当前状态挑选。
+
+```cangjie
+Style().bgColor(0x21, 0x96, 0xF3).applyTo(btn)                      // 常态
+Style().bgColor(0x15, 0x65, 0xC0).applyTo(btn, state: LV_STATE_PRESSED)
+Style().bgColor(0x9E, 0x9E, 0x9E).applyTo(btn, state: LV_STATE_DISABLED)
+Style().textColor(0xFF, 0xFF, 0xFF).applyTo(btn, state: LV_STATE_CHECKED | LV_STATE_PRESSED)
+```
 
 ### `Font`
 
@@ -824,6 +950,7 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 | 内存/FPS 监控 | `LV_USE_SYSMON` + `LV_USE_PERF_MONITOR` + `LV_USE_MEM_MONITOR` |
 | PNG/JPG/GIF/WebP 解码 | `LV_USE_LODEPNG` / `LV_USE_LIBPNG` / `LV_USE_TJPGD` / `LV_USE_GIF` / `LV_USE_LIBWEBP` |
 | DRM / fbdev / evdev | `LV_USE_LINUX_DRM` / `LV_USE_LINUX_FBDEV` / `LV_USE_EVDEV` |
+| flex / grid 布局 | `LV_USE_FLEX` / `LV_USE_GRID`（LVGL 默认都是 1；关掉时是**链接失败**而不是运行期抛错，因为这两组是直接绑定的真函数） |
 
 开关没开时，对应 API 不会链接失败（都经垫片转发），而是运行期抛 `LvglException`。
 

@@ -82,16 +82,26 @@ public class Style {
     /* ---- 应用 ---- */
 
     /**
-     * 应用到控件的指定部位。
+     * 应用到控件的指定部位 / 状态（selector = `part | state`）。
      *
      * @lifetime 借用：`lv_obj_add_style` 只保存 `lv_style_t*`。本方法会把该 Style
      *           登记到控件上（`Widget.keepStyle`），因此 `Style().radius(8).applyTo(btn)`
      *           这种临时对象写法也安全 —— 样式会活到控件销毁。
-     * @param part LV_PART_MAIN / SCROLLBAR / INDICATOR / KNOB ...（可或上 LV_STATE_*）
+     *
+     * 状态样式示例（按下态换背景、勾选态换文字色）：
+     * ```cangjie
+     * btn.applyTo ... // 常态
+     * Style().bgOpa(200).applyTo(btn, state: LV_STATE_PRESSED)
+     * Style().textColor(0xE5, 0x39, 0x35).applyTo(btn, state: LV_STATE_CHECKED)
+     * ```
+     * @param obj 目标控件
+     * @param part  LV_PART_MAIN / SCROLLBAR / INDICATOR / KNOB …
+     * @param state LV_STATE_DEFAULT（默认）/ PRESSED / CHECKED / FOCUSED / DISABLED，
+     *              可传多个状态相或（`LV_STATE_PRESSED | LV_STATE_CHECKED`）
      */
-    public func applyTo(obj: Widget, part!: UInt32 = LV_PART_MAIN): Unit {
+    public func applyTo(obj: Widget, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
         App.assertUIThread("Style.applyTo")
-        unsafe { lv_obj_add_style(obj.raw(), handle, part) }
+        unsafe { lv_obj_add_style(obj.raw(), handle, part | state) }
         obj.keepStyle(this)
     }
 

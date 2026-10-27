@@ -28,7 +28,7 @@ public class Image <: Widget {
         unsafe { lv_image_set_src(handle, CPointer<Unit>(dsc.raw())) }
         let keep = ArrayList<Object>()
         keep.add(dsc)
-        replaceKeepRefs(handle, keep)
+        keepOnly(keep)
     }
 
     /**
@@ -59,7 +59,7 @@ public class Image <: Widget {
             throw LvglException("图片加载失败：${path}（确认 lv_conf.h 已开 LV_USE_FS_STDIO 并重编了 liblvgl.a）")
         }
         // 源已换成文件路径，之前 setSource() 传入的 dsc 不再被 LVGL 引用。
-        replaceKeepRefs(handle, ArrayList<Object>())
+        keepOnly(ArrayList<Object>())
     }
 
     /**
@@ -160,7 +160,7 @@ public class Line <: Widget {
             lv_line_set_points(handle, buf, UInt32(points.size))
         }
         // 登记后，旧缓冲由保活表释放；控件删除时连新缓冲一起释放。
-        replaceKeepBuf(handle, CPointer<Unit>(buf))
+        keepBuf(CPointer<Unit>(buf))
     }
 }
 

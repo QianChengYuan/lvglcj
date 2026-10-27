@@ -19,12 +19,19 @@ import std.collection.*
 private class EventEntry {
     let id: UInt64
     let mask: UInt32
+    /**
+     * true  = 只接收「子孙冒泡上来」的事件（`lv_event_get_target != current_target`）；
+     * false = 只接收本对象自己发出的（两者相等）。
+     * 两种互斥，因此同一个控件上可以安全地同时挂 `on` 与 `onBubbled`。
+     */
+    let bubble: Bool
     let cb: (Event) -> Unit
     var active: Bool = true
 
-    init(id: UInt64, mask: UInt32, cb: (Event) -> Unit) {
+    init(id: UInt64, mask: UInt32, bubble: Bool, cb: (Event) -> Unit) {
         this.id = id
         this.mask = mask
+        this.bubble = bubble
         this.cb = cb
     }
 }
@@ -34,8 +41,8 @@ private class EventHub {
     let entries: ArrayList<EventEntry> = ArrayList<EventEntry>()
     var dispatchDepth: Int64 = 0
 
-    func add(id: UInt64, mask: UInt32, cb: (Event) -> Unit): Unit {
-        entries.add(EventEntry(id, mask, cb))
+    func add(id: UInt64, mask: UInt32, bubble: Bool, cb: (Event) -> Unit): Unit {
+        entries.add(EventEntry(id, mask, bubble, cb))
     }
 
     func contains(id: UInt64): Bool {
@@ -97,16 +104,35 @@ private func removeEventHub(addr: UIntNative): Unit {
  * 单个 lv_obj 的「保活槽」。
  *
  * 有些 LVGL API 只保存指针、不拷贝内容（`lv_line_set_points`、`lv_obj_add_style`、
- * `lv_calendar_set_highlighted_dates`、`lv_animimg_set_src`、`lv_image_set_src` …），
- * 这些数据的存活**必须锚在 lv_obj 上**，不能锚在仓颉包装对象上：
- * 仓颉的 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
+ * `lv_calendar_set_highlighted_dates`、`lv_animimg_set_src`、`lv_image_set_src`、
+ * `lv_style_set_grid_column_dsc_array` …），这些数据的存活**必须锚在 lv_obj 上**，
+ * 不能锚在仓颉包装对象上：仓颉的 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
  * 包装对象何时被回收与 lv_obj 是否还在屏上毫无关系。
+ *
+ * 三种语义（对外见 `Widget.keep` / `keepOnly` / `keepBuf`）：
+ * - `refs`   **追加式**：样式、图像描述符等「多个并存、各自独立」的对象；
+ * - `refs`   **替换式**（keepOnly）：帧序列这种「一次换一整套」的对象；
+ * - `cBufs`  **按槽位替换**：我们 malloc 出来交给 LVGL 的裸缓冲。同一槽位只留最新一个，
+ *   登记新的一定 free 旧的；不同槽位并存（grid 的列描述符与行描述符就需要两个槽）。
+ *
+ * 三种都不锚在包装对象上，全部由 `LV_EVENT_DELETE` 统一回收。
  */
 private class KeepSlot {
-    /// 需要 free 的 C 侧裸缓冲（同一槽只保留最新的一个，替换时释放旧的）
-    var cBuf: CPointer<Unit> = CPointer<Unit>()
     /// 需要强引用的仓颉对象（Style / ImageDsc …），随 lv_obj 删除一起释放
     let refs: ArrayList<Object> = ArrayList<Object>()
+    /// 需要 free 的 C 侧裸缓冲，下标即槽位号
+    let cBufs: ArrayList<CPointer<Unit>> = ArrayList<CPointer<Unit>>()
+
+    /** 写入指定槽位，返回被顶替下来的旧缓冲（由调用方 free，可能为空） */
+    func putBuf(slot: UInt32, buf: CPointer<Unit>): CPointer<Unit> {
+        let i = Int64(slot)
+        while (cBufs.size <= i) {
+            cBufs.add(CPointer<Unit>())
+        }
+        let old = cBufs[i]
+        cBufs[i] = buf
+        old
+    }
 }
 
 private let KEEPS: HashMap<UIntNative, KeepSlot> = HashMap<UIntNative, KeepSlot>()
@@ -116,10 +142,12 @@ private let HOOKED: HashSet<UIntNative> = HashSet<UIntNative>()
 private func freeKeepSlot(addr: UIntNative): Unit {
     match (KEEPS.get(addr)) {
         case Some(slot) =>
-            if (!slot.cBuf.isNull()) {
-                unsafe { LibC.free(slot.cBuf) }
-                slot.cBuf = CPointer<Unit>()
+            for (buf in slot.cBufs) {
+                if (!buf.isNull()) {
+                    unsafe { LibC.free(buf) }
+                }
             }
+            slot.cBufs.clear()
             slot.refs.clear()
             KEEPS.remove(addr)
         case None => ()
@@ -189,19 +217,26 @@ internal func trackedWidgetSeqs(): Array<Int64> {
 /**
  * LVGL 事件分发器：C 侧只见这个静态函数。
  * 回调异常在这里捕获，不能跨 C 边界传播。
+ *
+ * **按 current_target 索引而不是 target**：冒泡时 LVGL 会拿祖先的 cb 再调一次，
+ * 这时 current_target 是祖先、target 仍是原始对象。用 current_target 才能命中祖先的 hub，
+ * 并用「两者是否相等」区分「自己发出的」与「子对象冒泡上来的」两类订阅。
  */
 @C
 func cjEventDispatch(e: CPointer<lv_event_t>): Unit {
     let code = unsafe { lv_event_get_code(e) }
     let target = unsafe { lv_event_get_target(e) }
-    let addr = target.toUIntNative()
+    let current = unsafe { lv_event_get_current_target_obj(e) }
+    let targetAddr = target.toUIntNative()
+    let addr = current.toUIntNative()
+    let bubbled = addr != targetAddr
     match (EVENT_HUBS.get(addr)) {
         case Some(hub) =>
             hub.dispatchDepth += 1
             var i: Int64 = 0
             while (i < hub.entries.size) {
                 let entry = hub.entries[i]
-                if (entry.active && (entry.mask == LV_EVENT_ALL || entry.mask == code)) {
+                if (entry.active && entry.bubble == bubbled && (entry.mask == LV_EVENT_ALL || entry.mask == code)) {
                     try {
                         entry.cb(Event(e))
                     } catch (err: Exception) {
@@ -220,10 +255,10 @@ func cjEventDispatch(e: CPointer<lv_event_t>): Unit {
     // 这里做与「有没有订阅者」无关的收尾：回收订阅表 + 释放保活的缓冲/引用，
     // 避免长跑后注册表只增不减，也避免保活数据跟着已死的包装对象一起烂在内存里。
     if (code == LV_EVENT_DELETE) {
-        removeEventHub(addr)
-        freeKeepSlot(addr)
-        untrackWidget(addr)
-        HOOKED.remove(addr)
+        removeEventHub(targetAddr)
+        freeKeepSlot(targetAddr)
+        untrackWidget(targetAddr)
+        HOOKED.remove(targetAddr)
     }
 }
 
@@ -268,26 +303,30 @@ private func keepSlotOf(handle: CPointer<lv_obj_t>): KeepSlot {
     }
 }
 
-/** 让某个仓颉对象（Style / ImageDsc …）活到 lv_obj 被删除为止（追加式） */
+/** 追加式：`obj` 活到 lv_obj 被删除为止（多个对象各自独立并存） */
 internal func keepRef(handle: CPointer<lv_obj_t>, obj: Object): Unit {
     keepSlotOf(handle).refs.add(obj)
 }
 
-/** 替换保活的 C 侧裸缓冲：登记新缓冲并释放旧的（替换式，同一时刻只留一个） */
-internal func replaceKeepBuf(handle: CPointer<lv_obj_t>, buf: CPointer<Unit>): Unit {
-    let slot = keepSlotOf(handle)
-    if (!slot.cBuf.isNull()) {
-        unsafe { LibC.free(slot.cBuf) }
-    }
-    slot.cBuf = buf
-}
-
-/** 替换保活的仓颉对象列表（替换式，用于换帧/换源时清掉上一批） */
-internal func replaceKeepRefs(handle: CPointer<lv_obj_t>, objs: ArrayList<Object>): Unit {
+/** 替换式：用 `objs` 顶掉此前登记的全部对象（换帧 / 换源时用） */
+internal func keepOnlyRefs(handle: CPointer<lv_obj_t>, objs: ArrayList<Object>): Unit {
     let slot = keepSlotOf(handle)
     slot.refs.clear()
     for (o in objs) {
         slot.refs.add(o)
+    }
+}
+
+/**
+ * 按槽位登记一块**所有权转移**给控件的 C 缓冲：同一槽位的旧缓冲立即 free。
+ *
+ * grid 的列/行描述符是两块同时存活的数组，所以槽位是必需的——
+ * 早先「一个控件只留一块缓冲」的写法在这里会直接用掉前一块。
+ */
+internal func keepBufOf(handle: CPointer<lv_obj_t>, buf: CPointer<Unit>, slot: UInt32): Unit {
+    let old = keepSlotOf(handle).putBuf(slot, buf)
+    if (!old.isNull() && old.toUIntNative() != buf.toUIntNative()) {
+        unsafe { LibC.free(old) }
     }
 }
 
@@ -317,6 +356,21 @@ internal func releaseAllKeeps(): Unit {
 internal func keptRefCount(handle: CPointer<lv_obj_t>): Int64 {
     match (KEEPS.get(handle.toUIntNative())) {
         case Some(slot) => slot.refs.size
+        case None => 0
+    }
+}
+
+/** 当前保活的非空 C 缓冲个数（调试/测试用） */
+internal func keptBufCount(handle: CPointer<lv_obj_t>): Int64 {
+    match (KEEPS.get(handle.toUIntNative())) {
+        case Some(slot) =>
+            var n: Int64 = 0
+            for (buf in slot.cBufs) {
+                if (!buf.isNull()) {
+                    n += 1
+                }
+            }
+            n
         case None => 0
     }
 }
@@ -366,9 +420,20 @@ public class Event {
         unsafe { lv_event_get_code(handle) }
     }
 
-    /** 事件目标控件。返回的是借用视图，**不要**对其调用 finalize()/delete() */
+    /**
+     * 事件最初的目标控件（冒泡时始终是那个真正被点击/修改的控件）。
+     * 返回的是借用视图，**不要**对其调用 finalize()/delete()
+     */
     public func target(): Widget {
         Widget(unsafe { lv_event_get_target(handle) }, owned: false)
+    }
+
+    /**
+     * 当前回调所属的控件。与 `target()` 相同表示「事件由本控件发出」，
+     * 不同则表示「事件从子对象冒泡上来」。
+     */
+    public func currentTarget(): Widget {
+        Widget(unsafe { lv_event_get_current_target_obj(handle) }, owned: false)
     }
 }
 
@@ -398,23 +463,80 @@ public open class Widget <: Resource {
         }
     }
 
+    /* ---- 保活：LVGL「只存指针」类 API 的公共契约 ---- */
+
     /**
-     * 登记一个"LVGL 只存指针"的样式，让它活到本控件**被 LVGL 删除**为止。
-     * 由 `Style.applyTo()` / `SpanPart.style()` 内部调用，业务侧不需要手动调。
+     * 追加保活一个仓颉对象，直到本控件**被 LVGL 删除**为止。
      *
-     * 注意这里不挂在包装对象上，而是登记到按 lv_obj 地址索引的保活表：
-     * 包装对象可能先被 GC（时机不可控），而 lv_obj 还在屏上。
+     * 凡是「LVGL 只存指针、不拷贝内容」的能力，数据存活都得锚在 lv_obj 上：
+     * `lv_obj_add_style`、`lv_image_set_src`、`lv_spangroup_set_span_style`、
+     * `lv_style_set_grid_column_dsc_array` … 库内部已对样式与图像描述符自动登记，
+     * 自定义控件碰到同类 API 时用它，**不要**把引用挂在包装对象字段上。
+     *
+     * 为什么不挂包装对象上：仓颉 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
+     * 包装对象可能先于 lv_obj 被回收，而 lv_obj 还在屏上。
+     * @param obj 需要保活的对象
+     * @return this，便于链式调用
      */
-    internal func keepStyle(st: Style): Unit {
-        keepRef(handle, st)
+    public func keep(obj: Object): Widget {
+        App.assertUIThread("Widget.keep")
+        keepRef(handle, obj)
+        this
     }
 
     /**
-     * 当前被本控件保活的仓颉对象数量（样式、图像描述符等累加）。
+     * 替换式保活：用 `objs` 顶掉此前登记的全部对象（帧序列换源、图像换源）。
+     *
+     * 与 `keep()` 的差别是**先清空再登记**，适合「一次换一整套」的场景，
+     * 避免旧帧一直留到控件删除。
+     * @param objs 新的保活对象列表
+     * @return this，便于链式调用
+     */
+    public func keepOnly(objs: ArrayList<Object>): Widget {
+        App.assertUIThread("Widget.keepOnly")
+        keepOnlyRefs(handle, objs)
+        this
+    }
+
+    /**
+     * 按槽位接管一块 C 缓冲的**所有权**：本控件被删除时 free 它。
+     *
+     * 给「LVGL 直接引用一块我们 malloc 出来的数组」的 API 用：
+     * `lv_line_set_points`、`lv_calendar_set_highlighted_dates`、
+     * `lv_style_set_grid_column_dsc_array` / `..._row_...`。
+     *
+     * **必须是 `LibC.malloc` 系列分配的指针**，且登记之后调用方不能再 free（会重复释放）。
+     * 同一 `slot` 再次调用会立刻 free 旧缓冲；不同槽位并存——grid 的列描述符用
+     * `slot: 0`、行描述符用 `slot: 1`。
+     * @param buf 交由控件接管的缓冲
+     * @param slot 槽位号（默认 0）
+     * @return this，便于链式调用
+     */
+    public func keepBuf(buf: CPointer<Unit>, slot!: UInt32 = 0): Widget {
+        App.assertUIThread("Widget.keepBuf")
+        keepBufOf(handle, buf, slot)
+        this
+    }
+
+    /**
+     * 当前被本控件保活的仓颉对象个数（样式、图像描述符、自定义保活累加）。
      * 业务侧一般不需要；用于排查「保活是否真的挂上了」以及测试断言。
      */
-    public func keptStyleCount(): Int64 {
+    public func keptCount(): Int64 {
         keptRefCount(handle)
+    }
+
+    /** 当前被本控件接管的非空 C 缓冲个数（按槽位计） */
+    public func keptBufs(): Int64 {
+        keptBufCount(handle)
+    }
+
+    /**
+     * 追加保活一个样式；由 `Style.applyTo()` / `SpanPart.style()` 内部调用。
+     * 与 `keep()` 等价，保留此入口只是为了让样式路径读起来明确。
+     */
+    internal func keepStyle(st: Style): Unit {
+        keepRef(handle, st)
     }
 
     /* ---- 几何 ---- */
@@ -442,6 +564,41 @@ public open class Widget <: Resource {
 
     public func height(): Int32 {
         unsafe { lv_obj_get_height(handle) }
+    }
+
+    /**
+     * 相对父对象**内容区**的左上角 x 坐标。
+     *
+     * flex/grid 的子对象位置是惰性计算的：改完布局属性后必须等布局更新，
+     * 在此之前读到的还是旧值 —— 需要立即读请先调 `updateLayout()`。
+     */
+    public func x(): Int32 {
+        unsafe { lv_obj_get_x(handle) }
+    }
+
+    /** 相对父对象内容区的左上角 y 坐标（同 `x()` 的惰性说明） */
+    public func y(): Int32 {
+        unsafe { lv_obj_get_y(handle) }
+    }
+
+    /** 内容区宽度（去掉 padding / 边框后的可布局宽度） */
+    public func contentWidth(): Int32 {
+        unsafe { lv_obj_get_content_width(handle) }
+    }
+
+    /** 内容区高度（去掉 padding / 边框后的可布局高度） */
+    public func contentHeight(): Int32 {
+        unsafe { lv_obj_get_content_height(handle) }
+    }
+
+    /**
+     * 立即重算本对象子树的布局（等价 `lv_obj_update_layout`）。
+     *
+     * 正常界面里下一帧会自动算；**测试里必须显式调**，否则刚设好的 flex/grid
+     * 布局还没落到子对象的 x/y/size 上，断言读到的是旧值。
+     */
+    public func updateLayout(): Unit {
+        unsafe { lv_obj_update_layout(handle) }
     }
 
     /* ---- 标志 / 状态 ---- */
@@ -472,10 +629,65 @@ public open class Widget <: Resource {
      * 订阅事件（mask 为 LV_EVENT_*；LV_EVENT_ALL 收全部）。
      * 返回订阅句柄，可用 cancel() 取消；控件删除时订阅会自动失效。
      *
+     * 等价于 `on(mask, cb)`；保留此名是为了与「我确实要收全量」的意图区分。
      * @throws[LvglException] 控件已释放或已请求删除时
      */
     public func onEvent(mask: UInt32, cb: (Event) -> Unit): EventSubscription {
-        App.assertUIThread("Widget.onEvent")
+        subscribe(mask, cb)
+    }
+
+    /**
+     * 精确订阅一个事件码（`EventCode.CLICKED` 等），只收**本控件自己发出的**。
+     *
+     * 与 `onEvent(LV_EVENT_ALL)` 相比，过滤放在仓颉侧的分发表里就完成了，
+     * 回调不会再被无关事件唤醒 —— 滑动列表这类高频控件差别明显。
+     * @param code LV_EVENT_* 事件码
+     * @param cb 回调（在 UI 线程执行；异常由 `App.onCallbackError` 接管）
+     * @return 可取消的订阅句柄
+     * @throws[LvglException] 控件已释放或已请求删除时
+     */
+    public func on(code: UInt32, cb: (Event) -> Unit): EventSubscription {
+        subscribe(code, cb)
+    }
+
+    /**
+     * 订阅**子孙冒泡上来**的事件（只收 target != 本控件的），常用于「一屏一个处理器」。
+     *
+     * 前置条件：发出事件的那个子孙必须带 `LV_OBJ_FLAG_EVENT_BUBBLE`，
+     * 否则事件根本不会向上传播 —— 用 `child.bubble()` 打开。为了少踩坑，
+     * 本方法会给**自己**也打开该标志（作为中间层继续向上传递时是必需的）。
+     *
+     * ```cangjie
+     * root.onBubbled(EventCode.CLICKED) { e => ... }  // e.target() 是真正被点的控件
+     * btn.bubble()
+     * ```
+     * @param code LV_EVENT_* 事件码（或 LV_EVENT_ALL）
+     * @param cb 回调
+     * @return 可取消的订阅句柄
+     * @throws[LvglException] 控件已释放或已请求删除时
+     */
+    public func onBubbled(code: UInt32, cb: (Event) -> Unit): EventSubscription {
+        bubble()
+        subscribe(code, cb, bubble: true)
+    }
+
+    /**
+     * 打开/关闭事件冒泡（`LV_OBJ_FLAG_EVENT_BUBBLE`）：打开后本控件发出的事件
+     * 会继续传给父对象，父对象上的 `onBubbled` 才能收到。
+     * @param on true 打开，false 关闭
+     * @return this，便于链式调用
+     */
+    public func bubble(on!: Bool = true): Widget {
+        if (on) {
+            addFlag(LV_OBJ_FLAG_EVENT_BUBBLE)
+        } else {
+            removeFlag(LV_OBJ_FLAG_EVENT_BUBBLE)
+        }
+        this
+    }
+
+    private func subscribe(mask: UInt32, cb: (Event) -> Unit, bubble!: Bool = false): EventSubscription {
+        App.assertUIThread("Widget.on")
         if (!alive || deleteRequested) {
             throw LvglException("控件已释放，不能注册事件")
         }
@@ -491,7 +703,7 @@ public open class Widget <: Resource {
         }
         let id = nextEventId
         nextEventId += 1
-        hub.add(id, mask, cb)
+        hub.add(id, mask, bubble, cb)
         EventSubscription(addr, id)
     }
 
@@ -505,26 +717,105 @@ public open class Widget <: Resource {
         let _ = unsafe { lv_obj_send_event(handle, code, CPointer<Unit>()) }
     }
 
-    /* ---- 局部样式快捷 ---- */
+    /* ---- 局部样式快捷（selector = part | state） ---- */
 
-    public func setStyleBgColor(r: UInt8, g: UInt8, b: UInt8, part!: UInt32 = LV_PART_MAIN): Unit {
-        unsafe { lv_obj_set_style_bg_color(handle, Color.of(r, g, b), part) }
+    /**
+     * 一次性改单个属性，不产生可复用的 `Style` 对象。
+     *
+     * 与 `Style().xxx().applyTo()` 的分工：要复用到多个控件（尤其常态/按下态成对）
+     * 请用 `Style`；只调一处就改的目标用这组 setter 更直接，也不用操心保活。
+     * 所有 setter 都支持 `part` 与 `state`，例如：
+     * ```cangjie
+     * btn.setStyleBgColor(0xD0, 0xD0, 0xD0, state: LV_STATE_PRESSED)
+     * slider.setStyleBgColor(0x21, 0x96, 0xF3, part: LV_PART_INDICATOR)
+     * ```
+     * @param r 红
+     * @param g 绿
+     * @param b 蓝
+     * @param part 目标部件（LV_PART_*）
+     * @param state 目标状态（LV_STATE_*，默认 DEFAULT）
+     */
+    public func setStyleBgColor(r: UInt8, g: UInt8, b: UInt8, part!: UInt32 = LV_PART_MAIN,
+        state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_bg_color(handle, Color.of(r, g, b), part | state) }
     }
 
-    public func setStyleTextColor(r: UInt8, g: UInt8, b: UInt8, part!: UInt32 = LV_PART_MAIN): Unit {
-        unsafe { lv_obj_set_style_text_color(handle, Color.of(r, g, b), part) }
+    /** 背景不透明度（0 透明，255 不透明；`LV_OPA_COVER` 即 255） */
+    public func setStyleBgOpa(opa: UInt8, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_bg_opa(handle, opa, part | state) }
     }
 
-    public func setStyleRadius(radius: Int32, part!: UInt32 = LV_PART_MAIN): Unit {
-        unsafe { lv_obj_set_style_radius(handle, radius, part) }
+    /** 文字颜色 */
+    public func setStyleTextColor(r: UInt8, g: UInt8, b: UInt8, part!: UInt32 = LV_PART_MAIN,
+        state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_text_color(handle, Color.of(r, g, b), part | state) }
+    }
+
+    /** 圆角半径（像素） */
+    public func setStyleRadius(radius: Int32, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_radius(handle, radius, part | state) }
+    }
+
+    /** 边框宽度（像素，0 即无边框） */
+    public func setStyleBorderWidth(w: Int32, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_border_width(handle, w, part | state) }
+    }
+
+    /** 边框颜色 */
+    public func setStyleBorderColor(r: UInt8, g: UInt8, b: UInt8, part!: UInt32 = LV_PART_MAIN,
+        state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_border_color(handle, Color.of(r, g, b), part | state) }
+    }
+
+    /**
+     * 四边统一内边距。
+     *
+     * 分别设四条边：`lv_obj_set_style_pad_all` 在 LVGL 里是 `static inline`，
+     * 静态库里没有这个符号，直接 FFI 绑定会链接失败（`Style.padAll` 走的是垫片包装）。
+     */
+    public func setStylePadAll(pad: Int32, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        let sel = part | state
+        unsafe {
+            lv_obj_set_style_pad_left(handle, pad, sel)
+            lv_obj_set_style_pad_right(handle, pad, sel)
+            lv_obj_set_style_pad_top(handle, pad, sel)
+            lv_obj_set_style_pad_bottom(handle, pad, sel)
+        }
+    }
+
+    /** 阴影宽度（像素，0 即无阴影） */
+    public func setStyleShadowWidth(w: Int32, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_shadow_width(handle, w, part | state) }
+    }
+
+    /**
+     * 设置 flex / grid 的子对象间距（`pad_row` 与 `pad_column` 同时设）。
+     *
+     * 注意这两个属性**不受 `setStylePadAll` / `padAll` 影响**：它们是独立的
+     * 「子对象之间的间距」，而 pad_all 是「内容与边框之间的留白」。
+     * 布局间距没归零时，flex / grid 的轨道尺寸会算得比预期小 —— 这点很容易漏。
+     * @param gap 间距（像素）
+     * @param part 目标部件
+     * @param state 目标状态
+     */
+    public func setStyleGap(gap: Int32, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        let sel = part | state
+        unsafe {
+            lv_obj_set_style_pad_row(handle, gap, sel)
+            lv_obj_set_style_pad_column(handle, gap, sel)
+        }
     }
 
     /**
      * 设置字体。text_font 是可继承属性：设在 Screen / 容器上即对该子树全部生效，
      * 因此全局换字体只需 `disp.screen().setFont(f)`。
+     *
+     * @param f 字体
+     * @param part 目标部件
+     * @param state 目标状态
      */
-    public func setFont(f: Font, part!: UInt32 = LV_PART_MAIN): Unit {
-        unsafe { lv_obj_set_style_text_font(handle, f.raw(), part) }
+    public func setFont(f: Font, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        unsafe { lv_obj_set_style_text_font(handle, f.raw(), part | state) }
     }
 
     /* ---- 生命周期 ---- */

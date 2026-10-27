@@ -314,7 +314,7 @@ cfg = "--cfg=\"lv_backend=sdl\""
 
 ```bash
 export LVGLCJ_LIB_DIR=lib/linux-x64      # Windows: $env:LVGLCJ_LIB_DIR = "lib/windows-x64"
-cjpm test                                # 实测 62 个用例：39 passed / 23 skipped / 0 failed
+cjpm test                                # 实测 84 个用例：39 passed / 45 skipped / 0 failed
 
 # 含 display 用例。注意 --include-tags 不会覆盖配置里的 exclude-tags，
 # 必须用一个不存在的 tag 把它顶掉

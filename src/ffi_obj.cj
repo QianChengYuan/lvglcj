@@ -36,6 +36,14 @@ foreign func lv_obj_get_width(obj: CPointer<lv_obj_t>): Int32
 
 foreign func lv_obj_get_height(obj: CPointer<lv_obj_t>): Int32
 
+foreign func lv_obj_get_x(obj: CPointer<lv_obj_t>): Int32
+
+foreign func lv_obj_get_y(obj: CPointer<lv_obj_t>): Int32
+
+foreign func lv_obj_get_content_width(obj: CPointer<lv_obj_t>): Int32
+
+foreign func lv_obj_get_content_height(obj: CPointer<lv_obj_t>): Int32
+
 foreign func lv_obj_align(obj: CPointer<lv_obj_t>, align: UInt32, xOfs: Int32, yOfs: Int32): Unit
 
 foreign func lv_obj_set_align(obj: CPointer<lv_obj_t>, align: UInt32): Unit
@@ -82,6 +90,12 @@ foreign func lv_event_get_code(e: CPointer<lv_event_t>): UInt32
 
 foreign func lv_event_get_target(e: CPointer<lv_event_t>): CPointer<lv_obj_t>
 
+/**
+ * 当前被调用的对象（冒泡时是**祖先**，不是最初的目标）。
+ * 与 `lv_event_get_target` 比较即可判断这次回调是「自己发出」还是「子对象冒泡上来」。
+ */
+foreign func lv_event_get_current_target_obj(e: CPointer<lv_event_t>): CPointer<lv_obj_t>
+
 foreign func lv_event_get_param(e: CPointer<lv_event_t>): CPointer<Unit>
 
 /* ==================== 常量（与 C 头文件核对，编译期值） ==================== */
@@ -95,6 +109,8 @@ public const LV_OBJ_FLAG_SCROLLABLE: UInt32 = 1 << 4
 /* CHAIN 是 HOR|VER 两位的组合（0x300），不是单个位 */
 public const LV_OBJ_FLAG_SCROLL_CHAIN: UInt32 = (1 << 8) | (1 << 9)
 public const LV_OBJ_FLAG_SCROLL_ELASTIC: UInt32 = 1 << 5
+/* 事件冒泡：只有**发出事件的对象**带这一位，父对象才会收到（lv_obj.h:64，1u<<14） */
+public const LV_OBJ_FLAG_EVENT_BUBBLE: UInt32 = 1 << 14
 
 /* LV_STATE_*（lv_obj_style.h，selector = part | state，0 即 MAIN|DEFAULT） */
 public const LV_STATE_DEFAULT: UInt32 = 0

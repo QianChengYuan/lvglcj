@@ -182,7 +182,7 @@ public class Calendar <: Widget {
             lv_calendar_set_highlighted_dates(handle, buf, UIntNative(dates.size))
         }
         // 登记后旧缓冲由保活表释放；控件删除时连新缓冲一起释放。
-        replaceKeepBuf(handle, CPointer<Unit>(buf))
+        keepBuf(CPointer<Unit>(buf))
     }
 
     /** 用户点击选中的日期；未选中时返回 None */
@@ -247,12 +247,12 @@ public class AnimImage <: Widget {
             lv_animimg_set_duration(handle, durationMs)
         }
         // 帧指针数组与每个 ImageDsc 都交给保活表：旧的一批在登记新的一批时释放。
-        replaceKeepBuf(handle, CPointer<Unit>(buf))
+        keepBuf(CPointer<Unit>(buf))
         let keep = ArrayList<Object>()
         for (d in list) {
             keep.add(d)
         }
-        replaceKeepRefs(handle, keep)
+        keepOnly(keep)
     }
 
     /** 开始播放 */

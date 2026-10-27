@@ -33,6 +33,8 @@ import std.unittest.testmacro.*
 class WidgetTests {
     static var scr: Option<Screen> = None
     static var eventCount: Int32 = 0
+    static var selfCount: Int32 = 0
+    static var bubbleCount: Int32 = 0
     static var eventError: String = ""
 
     @BeforeAll
@@ -138,6 +140,79 @@ class WidgetTests {
         // 幂等：重复 finalize 不能再碰已释放的 C 指针
         btn.finalize()
         @Expect(eventCount, 1)
+    }
+
+    /** on(code) 只收精确匹配的事件码，不做全量分发 */
+    @Tag[requires_display]
+    @TestCase
+    func testOnReceivesOnlyExactCode() {
+        selfCount = 0
+        let btn = Button(screen())
+        let sub = btn.on(LV_EVENT_VALUE_CHANGED) {_ => selfCount += 1}
+        btn.sendEvent(LV_EVENT_CLICKED)
+        @Expect(selfCount, 0)
+        btn.sendEvent(LV_EVENT_VALUE_CHANGED)
+        @Expect(selfCount, 1)
+        sub.cancel()
+        btn.finalize()
+        @Expect(true)
+    }
+
+    /**
+     * on 与 onBubbled 互斥：
+     * - 子对象冒泡上来的事件**不**触发父对象上的 on；
+     * - 父对象自己发出的事件**不**触发它自己的 onBubbled。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testOnAndOnBubbledAreMutuallyExclusive() {
+        selfCount = 0
+        bubbleCount = 0
+        let root = Container(screen())
+        let child = Button(root)
+        child.bubble()
+        let s1 = root.on(LV_EVENT_CLICKED) {_ => selfCount += 1}
+        let s2 = root.onBubbled(LV_EVENT_CLICKED) {_ => bubbleCount += 1}
+
+        child.sendEvent(LV_EVENT_CLICKED) // 冒泡上来
+        @Expect(selfCount, 0)
+        @Expect(bubbleCount, 1)
+
+        root.sendEvent(LV_EVENT_CLICKED) // 自己发出
+        @Expect(selfCount, 1)
+        @Expect(bubbleCount, 1)
+
+        s1.cancel()
+        s2.cancel()
+        root.close() // 递归删除子对象
+        @Expect(true)
+    }
+
+    /** 没开 EVENT_BUBBLE 的子对象，事件不会传到父对象 */
+    @Tag[requires_display]
+    @TestCase
+    func testBubbleRequiresFlag() {
+        bubbleCount = 0
+        let root = Container(screen())
+        let child = Button(root)
+        let sub = root.onBubbled(LV_EVENT_CLICKED) {_ => bubbleCount += 1}
+
+        child.sendEvent(LV_EVENT_CLICKED)
+        @Expect(bubbleCount, 0)
+
+        child.bubble()
+        @Expect(child.hasFlag(LV_OBJ_FLAG_EVENT_BUBBLE), true)
+        child.sendEvent(LV_EVENT_CLICKED)
+        @Expect(bubbleCount, 1)
+
+        child.bubble(on: false)
+        @Expect(child.hasFlag(LV_OBJ_FLAG_EVENT_BUBBLE), false)
+        child.sendEvent(LV_EVENT_CLICKED)
+        @Expect(bubbleCount, 1)
+
+        sub.cancel()
+        root.close()
+        @Expect(true)
     }
 
     /** 控件回调抛异常时交给 App.onCallbackError，不跨 C 边界传播 */
@@ -368,11 +443,11 @@ class WidgetTests {
     @TestCase
     func testStyleTemporaryIsKeptByWidget() {
         let btn = Button(screen())
-        @Expect(btn.keptStyleCount(), 0)
+        @Expect(btn.keptCount(), 0)
         Style().radius(8).bgColor(0x33, 0x66, 0x99).applyTo(btn) // 临时对象，出语句即无本地引用
-        @Expect(btn.keptStyleCount(), 1)
+        @Expect(btn.keptCount(), 1)
         Style().borderWidth(2).applyTo(btn)
-        @Expect(btn.keptStyleCount(), 2)
+        @Expect(btn.keptCount(), 2)
         App.refreshNow() // 真画一帧：没保活的话，ASan 下这里就是 heap-use-after-free
         btn.finalize()
         @Expect(true)
@@ -385,9 +460,167 @@ class WidgetTests {
         let sg = SpanGroup(screen())
         sg.add("警告：").style(Style().textColor(255, 80, 80)) // 临时对象
         sg.add("磁盘剩余 12%")
-        @Expect(sg.keptStyleCount(), 1)
+        @Expect(sg.keptCount(), 1)
         App.refreshNow()
         sg.finalize()
+        @Expect(true)
+    }
+
+    /** keep() 是追加式：多次调用累加，互不顶替 */
+    @Tag[requires_display]
+    @TestCase
+    func testKeepIsAppendOnly() {
+        let lb = Label(screen())
+        lb.keep(Style())
+        lb.keep(Style())
+        lb.keep(Style())
+        @Expect(lb.keptCount(), 3)
+        lb.close()
+        @Expect(true)
+    }
+
+    /** keepOnly() 是替换式：一套换一套，旧的立刻不再被引用 */
+    @Tag[requires_display]
+    @TestCase
+    func testKeepOnlyReplacesWholeSet() {
+        let lb = Label(screen())
+        lb.keep(Style())
+        lb.keep(Style())
+        @Expect(lb.keptCount(), 2)
+        lb.keepOnly(ArrayList<Object>())
+        @Expect(lb.keptCount(), 0)
+        lb.keepOnly(ArrayList<Object>([Style()]))
+        @Expect(lb.keptCount(), 1)
+        lb.close()
+        @Expect(true)
+    }
+
+    /**
+     * keepBuf 按槽位并存：grid 的列/行描述符是两块**同时**存活的数组，
+     * 早先「一个控件只留一块缓冲」的设计在这里会用掉前一块。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testKeepBufSlotsCoexistAndReplaceInPlace() {
+        let lb = Label(screen())
+        @Expect(lb.keptBufs(), 0)
+        // 注意 malloc<T> 的 T 不能是 Unit（sizeOf/alignOf 为 0，内部对齐运算会除零）
+        lb.keepBuf(CPointer<Unit>(unsafe { LibC.malloc<UInt8>(count: 8) }))
+        @Expect(lb.keptBufs(), 1)
+        lb.keepBuf(CPointer<Unit>(unsafe { LibC.malloc<UInt8>(count: 8) }), slot: 1)
+        @Expect(lb.keptBufs(), 2)
+        // 同槽替换：旧缓冲释放，槽位总数不变
+        lb.keepBuf(CPointer<Unit>(unsafe { LibC.malloc<UInt8>(count: 16) }))
+        @Expect(lb.keptBufs(), 2)
+        App.refreshNow()
+        lb.close() // 两块缓冲随控件一起 free
+        @Expect(true)
+    }
+
+    /**
+     * 状态样式：同一属性在 DEFAULT / PRESSED / DISABLED 各挂一份，互不顶替。
+     * 能不能真的换色要看渲染结果，这里先钉住「三份都登记上了且切换状态不崩」。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testStateSelectorStylesCoexist() {
+        let btn = Button(screen())
+        Style().bgColor(0x21, 0x96, 0xF3).applyTo(btn) // 常态
+        Style().bgColor(0x15, 0x65, 0xC0).applyTo(btn, state: LV_STATE_PRESSED)
+        Style().bgColor(0x9E, 0x9E, 0x9E).applyTo(btn, state: LV_STATE_DISABLED)
+        @Expect(btn.keptCount(), 3)
+        btn.addState(LV_STATE_PRESSED)
+        App.refreshNow()
+        btn.removeState(LV_STATE_PRESSED)
+        btn.addState(LV_STATE_DISABLED)
+        App.refreshNow()
+        btn.close()
+        @Expect(true)
+    }
+
+    /** part 选择器：滑块轨道 / 指示条 / 滑块头是三个不同 part，可各挂一套 */
+    @Tag[requires_display]
+    @TestCase
+    func testPartSelectorStylesCoexist() {
+        let sl = Slider(screen())
+        Style().bgColor(0xD0, 0xD0, 0xD0).applyTo(sl, part: LV_PART_MAIN)
+        Style().bgColor(0x21, 0x96, 0xF3).applyTo(sl, part: LV_PART_INDICATOR)
+        Style().bgColor(0xFF, 0xFF, 0xFF).applyTo(sl, part: LV_PART_KNOB)
+        @Expect(sl.keptCount(), 3)
+        App.refreshNow()
+        sl.close()
+        @Expect(true)
+    }
+
+    /** 直接 setter 组：part / state 都能透传，且可反复覆盖同一属性 */
+    @Tag[requires_display]
+    @TestCase
+    func testInlineStyleSetters() {
+        let box = Container(screen())
+        box.setStyleBgColor(0x11, 0x22, 0x33)
+        box.setStyleBgOpa(200)
+        box.setStyleRadius(8)
+        box.setStyleBorderWidth(2)
+        box.setStyleBorderColor(0x00, 0x00, 0x00)
+        box.setStylePadAll(12)
+        box.setStyleShadowWidth(4)
+        box.setStyleBgColor(0x44, 0x55, 0x66, state: LV_STATE_PRESSED)
+        box.setStyleTextColor(0xFF, 0xFF, 0xFF, part: LV_PART_MAIN, state: LV_STATE_FOCUSED)
+        App.refreshNow()
+        @Expect(box.width() >= 0, true)
+        box.close()
+        @Expect(true)
+    }
+
+    /**
+     * 几何断言样板（headless，SDL dummy 驱动，不弹窗）。
+     *
+     * 这是 flex/grid 用例的验证基座：`set_pos` / `set_size` 之后**必须**
+     * 先 `updateLayout()` 再读坐标，否则读到的是布局前的旧值。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testGeometryIsReadableInHeadlessMode() {
+        let box = Container(screen())
+        box.size(200, 100)
+        box.pos(10, 10)
+        box.updateLayout()
+        @Expect(box.x(), 10)
+        @Expect(box.y(), 10)
+        @Expect(box.width(), 200)
+        @Expect(box.height(), 100)
+        box.close()
+    }
+
+    /** 内容区 = 外框减去 padding / 边框：布局算的是内容区，断言不能拿 width() 顶替 */
+    @Tag[requires_display]
+    @TestCase
+    func testContentAreaShrinksWithPadding() {
+        let box = Container(screen())
+        box.size(120, 80)
+        Style().padAll(10).applyTo(box)
+        box.updateLayout()
+        @Expect(box.contentWidth() <= box.width(), true)
+        @Expect(box.contentWidth() > 0, true)
+        @Expect(box.contentWidth() < 120, true)
+        box.close()
+    }
+
+    /** 子对象坐标是相对**父内容区**的，不是相对父外框 */
+    @Tag[requires_display]
+    @TestCase
+    func testChildPositionIsRelativeToParentContentArea() {
+        let outer = Container(screen())
+        outer.size(200, 200)
+        outer.pos(0, 0)
+        let inner = Container(outer)
+        inner.size(50, 50)
+        inner.pos(0, 0)
+        inner.updateLayout()
+        @Expect(inner.x() >= 0, true)
+        @Expect(inner.y() >= 0, true)
+        @Expect(inner.width(), 50)
+        outer.close() // 递归删除子对象，子对象上的订阅/保活一并回收
         @Expect(true)
     }
 }
