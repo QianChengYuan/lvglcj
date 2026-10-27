@@ -108,6 +108,9 @@ public class App {
         if (!lvglInited) {
             return
         }
+        // 先还掉我们自己 malloc 的保活缓冲：lv_deinit 直接释放 LVGL 内存池，
+        // 不会逐个对象派发 LV_EVENT_DELETE，等它跑完这些指针就悬垂了。
+        releaseAllKeeps()
         unsafe { lv_deinit() }
         lvglInited = false
     }
@@ -145,6 +148,55 @@ public class App {
      */
     public static func enableThreadAssert(enabled: Bool): Unit {
         threadAssert = enabled
+    }
+
+    /**
+     * 打开控件泄漏追踪（默认关闭，关闭时零开销）。
+     *
+     * 为什么需要它：`Widget` 是 open 类，仓颉不允许 open 类带终结器
+     * （cjc 报 `finalizer is forbidden in class ... that is open`），
+     * 而 GC 又只在分配压力下触发 —— "忘记 `finalize()`"没有任何自动兜底。
+     * 打开追踪后，每个 owned 控件在创建时登记、在 `LV_EVENT_DELETE` 时注销，
+     * 场景跑完用 `reportLiveWidgets()` 就能看到谁还挂着。
+     *
+     * **必须在创建控件之前调用**（已创建的控件不会被补登记）。
+     */
+    public static func enableWidgetTracking(): Unit {
+        setWidgetTracking(true)
+    }
+
+    /** 关闭控件泄漏追踪（已登记的条目保留，直到对应控件被删除） */
+    public static func disableWidgetTracking(): Unit {
+        setWidgetTracking(false)
+    }
+
+    /** 当前登记但尚未释放的控件数（未开启追踪时恒为 0） */
+    public static func liveWidgetCount(): Int64 {
+        trackedWidgetCount()
+    }
+
+    /**
+     * 打印未释放控件的摘要（调试用），返回未释放数量。
+     *
+     * 典型用法：在 demo 收尾、界面切换之后调用，期望得到 0。
+     * 未开启追踪时会给出提示并返回 0。
+     */
+    public static func reportLiveWidgets(): Int64 {
+        if (!widgetTrackingEnabled()) {
+            println("[lvglcj] 控件追踪未开启：请在创建控件之前调用 App.enableWidgetTracking()")
+            return 0
+        }
+        let n = trackedWidgetCount()
+        if (n == 0) {
+            println("[lvglcj] 没有未释放的控件（追踪期内创建的全部已删除）")
+            return 0
+        }
+        println("[lvglcj] 仍有 ${n} 个控件未释放，创建序号：")
+        for (s in trackedWidgetSeqs()) {
+            println("  #${s}")
+        }
+        println("[lvglcj] 若这些控件已随父对象一起从屏幕上消失，只是包装对象忘了 finalize()/close()，LVGL 侧并无泄漏")
+        n
     }
 
     /**

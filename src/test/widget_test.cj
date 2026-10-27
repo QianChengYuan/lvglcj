@@ -6,11 +6,13 @@
  *
  * 想跑必须**同时**顶掉配置里的排除项（只加 --include-tags 是无效的）：
  *
- *   # 有桌面：会真的弹出 320x240 的 LVGL 窗口
  *   cjpm test --include-tags=requires_display --exclude-tags=notag
  *
- *   # 无头环境（CI）：SDL dummy 驱动建出内存里的 display，绘制照常执行
- *   SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag
+ * 默认走 SDL dummy 视频驱动（在内存里建 display，绘制路径照常执行，**不弹窗口**）——
+ * 测试进程没有 SDL 事件循环，真窗口会一直"无响应"，人工点掉后 display 失效，
+ * 后面的用例会连带失败。确实想看画面时：
+ *
+ *   LVGLCJ_TEST_REAL_WINDOW=1 cjpm test --include-tags=requires_display --exclude-tags=notag
  *
  * 等价入口：scripts/build.ps1 -DisplayTests / scripts/build.sh --display-tests。
  *
@@ -29,7 +31,6 @@ import std.unittest.testmacro.*
 // 测试类由 @Test/@TestCase 宏展开，展开出来的跑测函数无需（也无法）写 @throws 文档
 @Test // cjlint-ignore !G.ERR.01 宏展开生成的测试入口，异常由测试框架处理
 class WidgetTests {
-    static var disp: Option<Display> = None
     static var scr: Option<Screen> = None
     static var eventCount: Int32 = 0
     static var eventError: String = ""
@@ -38,9 +39,9 @@ class WidgetTests {
     static func setupDisplay() {
         ensureLvglInit()
         try {
-            let d = Display.sdl(320, 240)
-            disp = Some(d)
-            scr = Some(d.screen())
+            // 与其他测试类共用同一个 display：各自 Display.sdl() 会并发初始化 SDL，
+            // 偶发 @BeforeAll 卡 40s 后整类用例不跑。
+            scr = Some(ensureSdlScreen())
         } catch (e: LvglException) {
             // 无头环境（CI）无法创建 SDL 窗口。本类的用例都带 requires_display，
             // 默认已被 [profile.test] 的 exclude-tags 排除，因此这里不能拖垮整个测试进程。

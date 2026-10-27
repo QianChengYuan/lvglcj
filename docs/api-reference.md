@@ -51,19 +51,24 @@ try {
 - 后台线程（网络/采集/解码）更新 UI 的唯一推荐方式是 `App.post { ... }`，任务线程安全入队，下一轮主循环执行；
 - `Widget.onEvent`、`EventSubscription.cancel()`、`TimerHandle` 的 `cancel/pause/resume/ready/setPeriod` 都会直接操作 LVGL，必须在主线程调用；后台线程请先 `App.post` 转交。
 
-**终结器不在主线程**（实测，仓颉 1.2.0 / Windows x64）：`~init` 跑在独立的 GC 线程上
-（探查程序里主线程 `Thread.currentThread.id == 1`，所有 `~init` 都是 `id == 2`）。
-因此库内对终结器做了区分处理：
+**终结器不可依赖**（实测，仓颉 1.2.0 / Windows x64）：
 
-| 终结器 | 释放动作 | 跨线程安全性 |
+- `~init` 跑在独立的 GC 线程上（主线程 `Thread.currentThread.id == 1`，所有 `~init` 都是 `id == 2`），
+  因此在终结器里调 `lv_*` 属于跨线程操作；
+- **触发时机由分配压力决定，不由时间决定**：丢弃引用后 `sleep` 1 秒零触发；分配约 300 万个元素
+  才一次性回收；模拟 UI 帧循环（300 帧 × 10ms）期间一次都不触发；进程正常退出也**不保证**执行；
+- `Widget` 是 `open` 类，而仓颉**不允许 open 类带终结器**
+  （`error: finalizer is forbidden in class ... that is open`），所以控件不可能靠 GC 兜底释放。
+
+因此本库的规则是「**释放靠作用域/显式调用，保活锚在 `lv_obj` 上**」，只保留两类终结器：
+
+| 终结器 | 释放动作 | 说明 |
 |---|---|---|
-| `Style.~init` | `lv_style_delete`（改 LVGL 样式链表） | **不安全** → 经 `App.releaseStyle()` 回投 UI 线程执行 |
-| `Line` / `Calendar` / `AnimImage` | `LibC.free` 顶点/日期/帧数组 | 纯堆释放，安全 |
-| `ImageBuffer` / `ImageDsc` | `free` 像素缓冲 / dsc | 纯堆释放，安全 |
-| `Canvas.~init` | `lv_draw_buf_destroy` | 只 free 缓冲，安全 |
+| `Style.~init` | `lv_style_delete`（改 LVGL 样式链表） | 不在 UI 线程 → 经 `App.releaseStyle()` 回投；回投不执行时宁可泄漏 |
+| `ImageBuffer` / `ImageDsc` / `Canvas` | `free` / `lv_draw_buf_destroy` | 纯堆释放，安全；但 GC 不触发就不会执行 |
 
-> 代价：如果 `App.run()` / `App.runOnce()` 一直没跑，回投的 `Style` 释放任务不会执行
-> （每个样式泄漏一两百字节）。这是有意取舍——宁可变慢泄漏，也不要在渲染中途改 LVGL 内部结构。
+> `Line` / `Calendar` / `AnimImage` 的顶点/日期/帧数组**已不依赖终结器**：它们登记在保活表里，
+> 随 `lv_obj` 删除（`LV_EVENT_DELETE`）同步释放。
 
 **自检工具**：
 
@@ -71,6 +76,8 @@ try {
 App.isUIThread()                    // 当前线程是否 setup() 所在线程
 App.enableThreadAssert(true)        // 调试构建里打开跨线程断言
 App.assertUIThread("我的后台任务")   // 手动断言（打开断言后才生效）
+App.enableWidgetTracking()          // 打开控件泄漏追踪（创建控件之前调用）
+App.reportLiveWidgets()             // 打印仍未释放的控件，返回数量（期望 0）
 ```
 
 打开断言后，`Widget.onEvent`、`Timer.every/once`、`Style.applyTo` 在非 UI 线程调用会直接抛
@@ -80,26 +87,45 @@ App.assertUIThread("我的后台任务")   // 手动断言（打开断言后才�
 
 | 类型 | 谁持有 | 释放方式 |
 |---|---|---|
-| `Widget` 及其子类 | LVGL 对象树（C 侧） | `finalize()` 同步删除 / `delete()` 异步删除，二者都幂等；也可随父对象一起销毁 |
-| `Screen` | LVGL display | **借用视图**，`finalize()` / `delete()` 会抛 `LvglException` |
+| `Widget` 及其子类 | LVGL 对象树（C 侧） | `finalize()` 同步删除 / `delete()` 异步删除 / `close()`（`Resource` 接口），三者都幂等；也可随父对象一起销毁 |
+| `Screen` | LVGL display | **借用视图**，`finalize()` / `delete()` 会抛 `LvglException`；`close()` 静默返回 |
 | `Event.target()` 返回的 `Widget` | **借用**（与源控件共享句柄） | **不要**释放；`finalize()` / `delete()` 会抛 `LvglException` |
-| `Style` | 仓颉对象持有 C 堆 `lv_style_t` | 析构自动 `lv_style_delete` |
+| `Style` | 仓颉对象持有 C 堆 `lv_style_t` | 析构自动 `lv_style_delete`（受 GC 时机限制） |
 | `Font.load/systemCjk` | FreeType | `close()`，或随进程结束回收 |
 | `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free`；产出 `ImageDsc` 后由 dsc 持有引用，交给控件即整链保活 |
-| `ImageDsc` | 垫片分配 | 析构自动释放；`Image.setSource` / `AnimImage.frames` 会在控件内保活引用 |
+| `ImageDsc` | 垫片分配 | 析构自动释放；`Image.setSource` / `AnimImage.frames` 会登记到控件保活表 |
 | `Canvas` | `lv_draw_buf_t` | 析构自动 `lv_draw_buf_destroy` |
+
+#### 确定性释放：`Resource` / try-with-resources
+
+`Widget` 实现了 `Resource`，因此释放可以跟着作用域走，**不依赖 GC**：
+
+```cangjie
+try (btn = Button(scr)) {
+    btn.size(100, 36)
+    // 体里抛异常也照样释放
+}   // 出作用域自动 close()，等价于 finalize()
+```
+
+`close()` 与 `finalize()` 的差别：借用视图（`Screen`/`Event.target()`）时 `close()` 静默返回（不抛），
+适合收尾阶段；需要"误用立刻报错"时继续用 `finalize()`。
 
 #### 只保存指针的 API（生命周期契约）
 
-LVGL 有一批 API **只存指针、不拷贝内容**，而绘制发生在后续的 `lv_timer_handler` 里。本库能保活的都在类内部保活了，但底层缓冲仍需调用方自己持有：
+LVGL 有一批 API **只存指针、不拷贝内容**，而绘制发生在后续的 `lv_timer_handler` 里。
+这些数据**登记在按 `lv_obj` 地址索引的保活表**（`KEEPS`）中，在 `LV_EVENT_DELETE` 时统一释放 ——
+锚点是 C 侧的 `lv_obj`，不是仓颉包装对象，因此包装对象被 GC 不会导致悬垂：
 
-| API | LVGL 侧行为 | 本库做法 / 调用方义务 |
+| API | LVGL 侧行为 | 本库做法 |
 |---|---|---|
-| `Line.setPoints` | 只存 `lv_point_t*` | 顶点数组存进 `Line` 字段，下次 `setPoints` 或对象销毁时释放 |
-| `Image.setSource` | 只存 `lv_image_dsc_t*` | 强引用 `ImageDsc`；dsc 又持有 `ImageBuffer` 引用（像素不拷贝）→ 整链保活 |
-| `AnimImage.frames` | 只存 dsc 指针数组 | 保活指针数组 + 每个 `ImageDsc`（同样顺带保住 `ImageBuffer`） |
-| `Calendar.highlight` | 只存日期数组 | 类内部保活，直到下次 `highlight` 或销毁 |
-| `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup（`Widget.keepStyle`），样式活到该控件销毁；临时对象写法安全 |
+| `Line.setPoints` | 只存 `lv_point_t*` | 缓冲登记进保活表，下次 `setPoints` 或控件删除时 `free` |
+| `Image.setSource` | 只存 `lv_image_dsc_t*` | `ImageDsc` 登记保活；dsc 又持有 `ImageBuffer` 引用（像素不拷贝）→ 整链保活 |
+| `AnimImage.frames` | 只存 dsc 指针数组 | 指针数组 + 每个 `ImageDsc` 都登记（同样顺带保住 `ImageBuffer`） |
+| `Calendar.highlight` | 只存日期数组 | 缓冲登记，直到下次 `highlight` 或控件删除 |
+| `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup；同一个 `Style` 挂多个控件时各自持有引用，删一个不影响其余 |
+
+> 旧版本把这些数据存在包装对象的字段里，靠"变量活到控件销毁"这条约定维持 —— 一旦包装对象先被 GC
+> 就是偶发花屏/UAF。现在这条约定不再需要。
 
 ### 0.5 初始化顺序
 
@@ -188,6 +214,10 @@ println("内存 ${m.usedSize}/${m.totalSize} 字节（${m.usedPct}%），碎片 
 | `App.isUIThread(): Bool` | 当前线程是否 `setup()` 所在线程（未 setup 时恒真） |
 | `App.enableThreadAssert(enabled: Bool): Unit` | 打开跨线程断言（默认关）；打开后注册类 API 在非 UI 线程调用即抛异常 |
 | `App.assertUIThread(what: String): Unit` | 手动断言当前在 UI 线程（仅在断言开关打开时生效） |
+| `App.enableWidgetTracking(): Unit` | 打开控件泄漏追踪（默认关，关闭时零开销）。**必须在创建控件之前调用** |
+| `App.disableWidgetTracking(): Unit` | 关闭追踪（已登记条目保留到对应控件被删除） |
+| `App.liveWidgetCount(): Int64` | 当前登记但未释放的控件数（未开启追踪时恒为 0） |
+| `App.reportLiveWidgets(): Int64` | 打印未释放控件摘要并返回数量；场景收尾时期望 0 |
 | `App.runOnce(): UInt32` | 先执行 post 任务，再泵一次 `lv_timer_handler`，返回距下次定时器的毫秒数 |
 | `App.refreshNow(): Unit` | 立即同步渲染一帧（`lv_refr_now(NULL)`），不等刷新定时器；截图/测试用 |
 | `App.run(idleMs!: UInt32 = 5): Unit` | 主循环：`runOnce()` + 休眠 `min(idleMs, 距下个定时器)`，直到 `App.stop()` |
@@ -519,7 +549,7 @@ anim.repeatCount(LV_ANIM_REPEAT_INFINITE)
 anim.start()
 ```
 
-> 同样只存指针：`frames()` 传入的 `Array<ImageDsc>` 及其背后的 `ImageBuffer` 都会被类内部保活，调用方别提前 `finalize()` 或让缓冲失效。
+> 同样只存指针：`frames()` 传入的 `Array<ImageDsc>` 及其背后的 `ImageBuffer` 会登记进该控件的保活表（活到下次 `frames()` 或控件删除），所以传临时对象也安全；但已经交给它的 `ImageDsc`/`ImageBuffer` 不要在别处提前 `finalize()`。
 
 #### 拼音输入法 `ImePinyin`
 

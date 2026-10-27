@@ -9,16 +9,47 @@
 package lvglcj.test
 
 import lvglcj.*
+import std.env.*
+import std.sync.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
 private var lvglInited = false
+private var cachedScreen: Option<Screen> = None // cjlint-ignore !G.VAR.02 测试进程内共享的只读缓存
+private let SCREEN_LOCK = Mutex()
 
 /** 幂等初始化：第一次调用执行 App.setup()（lv_init + 单调时钟），之后直接返回 */
 func ensureLvglInit(): Unit {
     if (!lvglInited) {
         App.setup()
         lvglInited = true
+    }
+}
+
+/**
+ * 懒建一个 320x240 的 SDL 屏幕，**整个测试进程共用**。
+ *
+ * 两件事都必须在真正建 display 之前做掉：
+ *
+ * ① **默认切到 dummy 视频驱动**。测试进程里没有 SDL 事件循环，真窗口会一直
+ *    "无响应"（标题栏变灰），人工点掉后 display 就失效了 —— 后续用例连带失败，
+ *    表现为某个类的 `@BeforeAll` 卡几十秒后报 `Before all step failed`。
+ *    dummy 驱动直接在内存里渲染，绘制/截图路径照样执行。
+ *    确实想看画面时：`LVGLCJ_TEST_REAL_WINDOW=1 cjpm test ...`。
+ * ② 单例复用。多个测试类各自 `Display.sdl()` 会重复初始化 SDL，没必要。
+ */
+func ensureSdlScreen(): Screen {
+    synchronized(SCREEN_LOCK) {
+        match (cachedScreen) {
+            case Some(s) => s
+            case None =>
+                if (getVariable("SDL_VIDEODRIVER").isNone() && getVariable("LVGLCJ_TEST_REAL_WINDOW").isNone()) {
+                    setVariable("SDL_VIDEODRIVER", "dummy")
+                }
+                let s = Display.sdl(320, 240).screen()
+                cachedScreen = Some(s)
+                s
+        }
     }
 }
 

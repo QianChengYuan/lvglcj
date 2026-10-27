@@ -307,9 +307,15 @@ Perf.hideMonitor(disp: Some(disp))   // 运行时隐藏（采样照常，随时�
 
 常见原因：
 
-- **句柄泄漏**：每个 `Widget` 都对应一个 LVGL 对象，删了界面要 `finalize()`；反复创建/销毁列表项时尤其注意；
-- **回调闭包累积**：`onEvent` 注册的闭包存在全局表里，对象销毁时不会自动清（当前实现的已知限制），高频重建控件时建议复用控件而不是反复新建；
-- **`Style` 被提前回收**：LVGL 只存指针，`Style` 对象要活到控件销毁之后。
+- **句柄泄漏**：每个 `Widget` 都对应一个 LVGL 对象，删了界面要 `finalize()` / `delete()` / `close()`；反复创建/销毁列表项时尤其注意。**不要指望 GC 兜底**：`Widget` 是 open 类，仓颉不允许 open 类带终结器，且终结器触发时机不可控（详见 `docs/api-reference.md` 0.3）。开发期可以这样定位：
+  ```cangjie
+  App.enableWidgetTracking()   // 创建控件之前调用
+  // ... 跑一遍建/删流程 ...
+  App.reportLiveWidgets()      // 期望 0；非 0 就是忘了释放的控件
+  ```
+  更省事的写法是 `try (w = Label(scr)) { ... }`（`Widget` 实现了 `Resource`，出作用域自动释放，异常路径也覆盖）。
+- **回调闭包**：订阅存在全局表里，**控件删除时会自动回收**（`LV_EVENT_DELETE` 时清 hub），不需要手动 cancel；只有"控件还活着、但某个订阅不再需要"时用 `sub.cancel()`。
+- **`Style` 的生命周期**：`applyTo` 之后由目标控件保活到控件被删除，不用自己存引用；同一个 `Style` 挂到多个控件时各自持有引用，删掉其中一个不影响其余。`Style` 自己的 C 堆内存在 GC 触发时才归还（GC 由分配压力驱动，可能长期不跑）。
 
 ### F5. 界面刷新慢、CPU 吃满
 

@@ -118,12 +118,10 @@ public class SpanGroup <: Widget {
 /**
  * 日历（lv_calendar）。
  *
- * 高亮日期数组在 C 侧**只保存指针、不拷贝**，因此本类内部保活，
- * 直到下一次 highlight() 或对象销毁。
+ * 高亮日期数组在 C 侧**只保存指针、不拷贝**，因此缓冲登记在保活表里，
+ * 活到下一次 highlight() 或**控件被删除**为止。
  */
 public class Calendar <: Widget {
-    private var highlighted: CPointer<lv_calendar_date_t> = CPointer<lv_calendar_date_t>()
-
     public init(parent: Widget) {
         super(unsafe { lv_calendar_create(parent.raw()) })
     }
@@ -183,10 +181,8 @@ public class Calendar <: Widget {
             }
             lv_calendar_set_highlighted_dates(handle, buf, UIntNative(dates.size))
         }
-        if (!highlighted.isNull()) {
-            unsafe { LibC.free(highlighted) }
-        }
-        highlighted = buf
+        // 登记后旧缓冲由保活表释放；控件删除时连新缓冲一起释放。
+        replaceKeepBuf(handle, CPointer<Unit>(buf))
     }
 
     /** 用户点击选中的日期；未选中时返回 None */
@@ -211,12 +207,6 @@ public class Calendar <: Widget {
                 }
         }
     }
-
-    ~init() {
-        if (!highlighted.isNull()) {
-            unsafe { LibC.free(highlighted) }
-        }
-    }
 }
 
 /* ==================== 帧动画 ==================== */
@@ -224,13 +214,11 @@ public class Calendar <: Widget {
 /**
  * 帧动画（lv_animimg）。
  *
- * LVGL 只保存帧指针数组的地址、**不拷贝内容**，所以本类同时保活
- * 指针数组与每个 ImageDsc；调用方不要让 ImageBuffer/ImageDsc 提前失效。
+ * LVGL 只保存帧指针数组的地址、**不拷贝内容**，所以指针数组与每个 ImageDsc
+ * 都登记进保活表，活到下一次 frames() 或**控件被删除**为止。
+ * 调用方因此可以把临时 ImageDsc 直接传进来。
  */
 public class AnimImage <: Widget {
-    private var framesBuf: CPointer<CPointer<Unit>> = CPointer<CPointer<Unit>>()
-    private var keptDscs: ArrayList<ImageDsc> = ArrayList<ImageDsc>()
-
     public init(parent: Widget) {
         super(unsafe { lv_animimg_create(parent.raw()) })
     }
@@ -258,15 +246,13 @@ public class AnimImage <: Widget {
             lv_animimg_set_src(handle, buf, UIntNative(list.size))
             lv_animimg_set_duration(handle, durationMs)
         }
-        if (!framesBuf.isNull()) {
-            unsafe { LibC.free(framesBuf) }
-        }
-        framesBuf = buf
-        let keep = ArrayList<ImageDsc>()
+        // 帧指针数组与每个 ImageDsc 都交给保活表：旧的一批在登记新的一批时释放。
+        replaceKeepBuf(handle, CPointer<Unit>(buf))
+        let keep = ArrayList<Object>()
         for (d in list) {
             keep.add(d)
         }
-        keptDscs = keep
+        replaceKeepRefs(handle, keep)
     }
 
     /** 开始播放 */
@@ -282,12 +268,6 @@ public class AnimImage <: Widget {
     /** 当前帧数 */
     public func srcCount(): UInt8 {
         unsafe { lv_animimg_get_src_count(handle) }
-    }
-
-    ~init() {
-        if (!framesBuf.isNull()) {
-            unsafe { LibC.free(framesBuf) }
-        }
     }
 }
 

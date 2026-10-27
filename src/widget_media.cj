@@ -5,6 +5,7 @@
  */
 package lvglcj
 
+import std.collection.*
 import std.fs.*
 
 /* ==================== 图像 ==================== */
@@ -13,21 +14,21 @@ import std.fs.*
  * 图像（lv_image）。
  *
  * `lv_image_set_src` 只保存指针：dsc 被回收后 LVGL 读到的是已释放内存。
- * 因此 setSource() 会把 ImageDsc 强引用存在本对象里，直到下次换源或控件销毁；
- * 而 ImageDsc 又持有产出它的 ImageBuffer 引用，所以
- * `img.setSource(buf.toImageDsc())` 这种「传临时对象」的写法也是安全的。
+ * 因此 setSource() 会把 ImageDsc 登记进保活表（按 lv_obj 地址），
+ * 一直保到下次换源或**控件被删除**；而 ImageDsc 又持有产出它的 ImageBuffer 引用，
+ * 所以 `img.setSource(buf.toImageDsc())` 这种「传临时对象」的写法也是安全的。
  */
 public class Image <: Widget {
-    private var sourceDsc: Option<ImageDsc> = None
-
     public init(parent: Widget) {
         super(unsafe { lv_image_create(parent.raw()) })
     }
 
-    /** 设置图像源（ImageBuffer.toImageDsc() 的产物）；dsc 由本控件保活 */
+    /** 设置图像源（ImageBuffer.toImageDsc() 的产物）；dsc 由控件保活到换源/删除 */
     public func setSource(dsc: ImageDsc): Unit {
         unsafe { lv_image_set_src(handle, CPointer<Unit>(dsc.raw())) }
-        sourceDsc = Some(dsc)
+        let keep = ArrayList<Object>()
+        keep.add(dsc)
+        replaceKeepRefs(handle, keep)
     }
 
     /**
@@ -58,7 +59,7 @@ public class Image <: Widget {
             throw LvglException("图片加载失败：${path}（确认 lv_conf.h 已开 LV_USE_FS_STDIO 并重编了 liblvgl.a）")
         }
         // 源已换成文件路径，之前 setSource() 传入的 dsc 不再被 LVGL 引用。
-        sourceDsc = None
+        replaceKeepRefs(handle, ArrayList<Object>())
     }
 
     /**
@@ -125,12 +126,11 @@ public class Chart <: Widget {
  * 折线（lv_line）。
  *
  * `lv_line_set_points` **只保存指针、不拷贝顶点数组**，而绘制发生在后续的
- * lv_timer_handler 里 —— 所以数组必须活得比这次调用久。本类内部保活，
- * 直到下一次 setPoints() 或对象销毁。
+ * lv_timer_handler 里 —— 数组必须活到下一次 setPoints() 或**控件被删除**。
+ * 缓冲登记在保活表里（按 lv_obj 地址），由 LV_EVENT_DELETE 统一释放，
+ * 不依赖仓颉包装对象什么时候被 GC。
  */
 public class Line <: Widget {
-    private var pointsBuf: CPointer<lv_point_t> = CPointer<lv_point_t>()
-
     public init(parent: Widget) {
         super(unsafe { lv_line_create(parent.raw()) })
     }
@@ -159,16 +159,8 @@ public class Line <: Widget {
             }
             lv_line_set_points(handle, buf, UInt32(points.size))
         }
-        if (!pointsBuf.isNull()) {
-            unsafe { LibC.free(pointsBuf) }
-        }
-        pointsBuf = buf
-    }
-
-    ~init() {
-        if (!pointsBuf.isNull()) {
-            unsafe { LibC.free(pointsBuf) }
-        }
+        // 登记后，旧缓冲由保活表释放；控件删除时连新缓冲一起释放。
+        replaceKeepBuf(handle, CPointer<Unit>(buf))
     }
 }
 

@@ -185,10 +185,20 @@ sudo apt install libdrm-dev:arm64 libevdev-dev:arm64
 ```bash
 export LVGL_DIR=/opt/lvgl-9.5.0
 export BUILD_DIR=/opt/build-pi
+export FT_INC=/root/aarch64-sdl/include      # 含 freetype2/ 的目录
 ./scripts/build-lvgl-pi.sh
 ```
 
 脚本会自动准备 `/opt/arm64-include`（把 `xf86drm*.h`、`libdrm/*.h`、`libevdev-1.0/` 扁平拷进去），因为**交叉 gcc 不会搜宿主机的 `/usr/include`**，而 `lv_linux_drm.c` 里 include 的是 `<xf86drm.h>` / `<drm_fourcc.h>`。
+
+Pi 配置开了 `LV_USE_FREETYPE`，所以 `lv_freetype.c` 编译期就要 `<ft2build.h>`：脚本会检查 `$FT_INC/freetype2/ft2build.h` 并在 C 编译参数里追加 `-I$FT_INC/freetype2`（缺了直接报错退出）。只需头文件，链接留给最终使用方：
+
+```bash
+mkdir -p /root/aarch64-sdl/include
+scp -r pi@raspberrypi.local:/usr/include/freetype2 /root/aarch64-sdl/include/
+```
+
+> 静态库带不出依赖：产物用于 Pi 时最终链接要补 `-lfreetype`（Pi 上装 `libfreetype6-dev`，或已随 `libfreetype6` 提供运行期库）。
 
 校验产物：
 
@@ -206,9 +216,10 @@ aarch64-linux-gnu-nm -g --defined-only lib/linux-arm64/liblvgl.a | grep -c evdev
 | `LV_USE_LINUX_DRM` | 0 | **1** |
 | `LV_USE_EVDEV` | Linux 1 / Windows 0 | **1** |
 | `LV_USE_DRAW_SW_ASM` | 默认 | **NEON** |
-| `LV_MEM_SIZE` | 256 KB | **128 KB**（复杂 UI 可提到 256 KB） |
+| `LV_MEM_SIZE` | 256 KB | **512 KB**（开了 FreeType，字形位图要吃 draw_buf） |
 | `LV_DEF_REFR_PERIOD` | 16 ms | **33 ms**（≈30 fps） |
-| `LV_USE_FREETYPE` | 1 | 0（要完整中文就在 Pi 上开，并装 Noto CJK） |
+| `LV_FONT_SOURCE_HAN_SANS_SC_16_CJK` | 1 | **1**（内置思源黑体 16px 子集，默认字体） |
+| `LV_USE_FREETYPE` | 1 | **1**（完整中文 + 任意字号，走 `DroidSansFallbackFull`） |
 | `LV_USE_LODEPNG` | **1** | **1**（`Image.fromFile` 的 PNG 解码；LVGL 内置，零外部依赖） |
 | `LV_USE_FS_STDIO` | **1** | **1**（文件访问走 `fopen`，驱动器字母 `'A'`；垫片负责拼 `A:<path>`） |
 | `LV_USE_IME_PINYIN` | **1** | **1**（`ImePinyin` 需它；LVGL 9.5 默认 0，改完要重编静态库） |
@@ -303,18 +314,18 @@ cfg = "--cfg=\"lv_backend=sdl\""
 
 ```bash
 export LVGLCJ_LIB_DIR=lib/linux-x64      # Windows: $env:LVGLCJ_LIB_DIR = "lib/windows-x64"
-cjpm test                                # 实测 56 个用例：39 passed / 17 skipped / 0 failed
+cjpm test                                # 实测 62 个用例：39 passed / 23 skipped / 0 failed
 
 # 含 display 用例。注意 --include-tags 不会覆盖配置里的 exclude-tags，
 # 必须用一个不存在的 tag 把它顶掉
-cjpm test --include-tags=requires_display --exclude-tags=notag   # 有桌面：会真的弹 320x240 窗口
-SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag  # 无头/CI
+cjpm test --include-tags=requires_display --exclude-tags=notag   # 默认 dummy 驱动，不弹窗
+LVGLCJ_TEST_REAL_WINDOW=1 cjpm test --include-tags=requires_display --exclude-tags=notag  # 要看画面时
 ```
 
 三个注意点：
 
 1. **测试二进制也要链接 `-lSDL2 -lfreetype`**：本库 `cjpm.toml` 已用 `[target.<triple>]` 的 `link-option` 声明，Windows 上还要保证 `SDL2.dll` / `libfreetype-6.dll` 在 `PATH`；
-2. 需要 display 的用例打 `@Tag[requires_display]`，由 `[profile.test].exclude-tags` 默认排除 —— 这样默认那轮不弹窗、无图形环境也不整片 ERROR；CI 会再加一轮显式执行（`--display-tests` / `-DisplayTests`，自动设 `SDL_VIDEODRIVER=dummy`）；
+2. 需要 display 的用例打 `@Tag[requires_display]`，由 `[profile.test].exclude-tags` 默认排除 —— 这样默认那轮不弹窗、无图形环境也不整片 ERROR；CI 会再加一轮显式执行（`--display-tests` / `-DisplayTests`）。测试里的 `ensureSdlScreen()` 会在**未显式设置** `SDL_VIDEODRIVER` 时自动切到 `dummy`：测试进程没有 SDL 事件循环，真窗口会一直"无响应"，人手点掉后 display 失效、后续用例连带失败；
 3. `@Tag` 的标签必须是**标识符**（`@Tag[requires_display]`），不能加引号；`@ExpectThrows` 用括号形式 `@ExpectThrows[LvglException](expr)`。
 
 ## 6. 手工构建配方（不用脚本）

@@ -91,6 +91,101 @@ private func removeEventHub(addr: UIntNative): Unit {
     }
 }
 
+/* ==================== 保活注册表 ==================== */
+
+/**
+ * 单个 lv_obj 的「保活槽」。
+ *
+ * 有些 LVGL API 只保存指针、不拷贝内容（`lv_line_set_points`、`lv_obj_add_style`、
+ * `lv_calendar_set_highlighted_dates`、`lv_animimg_set_src`、`lv_image_set_src` …），
+ * 这些数据的存活**必须锚在 lv_obj 上**，不能锚在仓颉包装对象上：
+ * 仓颉的 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
+ * 包装对象何时被回收与 lv_obj 是否还在屏上毫无关系。
+ */
+private class KeepSlot {
+    /// 需要 free 的 C 侧裸缓冲（同一槽只保留最新的一个，替换时释放旧的）
+    var cBuf: CPointer<Unit> = CPointer<Unit>()
+    /// 需要强引用的仓颉对象（Style / ImageDsc …），随 lv_obj 删除一起释放
+    let refs: ArrayList<Object> = ArrayList<Object>()
+}
+
+private let KEEPS: HashMap<UIntNative, KeepSlot> = HashMap<UIntNative, KeepSlot>()
+/// 已经给该 lv_obj 挂过 cjEventDispatch 的地址，避免重复注册 C 回调
+private let HOOKED: HashSet<UIntNative> = HashSet<UIntNative>()
+
+private func freeKeepSlot(addr: UIntNative): Unit {
+    match (KEEPS.get(addr)) {
+        case Some(slot) =>
+            if (!slot.cBuf.isNull()) {
+                unsafe { LibC.free(slot.cBuf) }
+                slot.cBuf = CPointer<Unit>()
+            }
+            slot.refs.clear()
+            KEEPS.remove(addr)
+        case None => ()
+    }
+}
+
+/* ==================== 控件泄漏追踪（可选，默认关闭） ==================== */
+
+/**
+ * 已创建但尚未删除的 owned 控件（地址 → 创建序号）。
+ *
+ * 为什么需要它：`Widget` 是 open 类，语言不允许带终结器（cjc 实测报
+ * `finalizer is forbidden in class ... that is open`），而 GC 又只在分配压力下触发，
+ * 「忘记 finalize」没有任何兜底。所以这里提供**可检测**而不是**可兜底**：
+ * 开发期打开追踪，跑完场景用 `App.reportLiveWidgets()` 看还有谁没释放。
+ * 关闭时零开销（只多一次布尔判断）。
+ */
+private let LIVE_WIDGETS: HashMap<UIntNative, Int64> = HashMap<UIntNative, Int64>()
+private var trackingOn: Bool = false // cjlint-ignore !G.VAR.02 只由 UI 线程读写
+private var nextLiveSeq: Int64 = 0 // cjlint-ignore !G.VAR.02 只由 UI 线程递增
+
+internal func setWidgetTracking(on: Bool): Unit {
+    trackingOn = on
+}
+
+internal func widgetTrackingEnabled(): Bool {
+    trackingOn
+}
+
+internal func untrackWidget(addr: UIntNative): Unit {
+    if (LIVE_WIDGETS.contains(addr)) {
+        LIVE_WIDGETS.remove(addr)
+    }
+}
+
+internal func trackedWidgetCount(): Int64 {
+    LIVE_WIDGETS.size
+}
+
+/** 未释放控件的创建序号（升序），用于报告里指出"早于谁创建" */
+internal func trackedWidgetSeqs(): Array<Int64> {
+    let seqs = ArrayList<Int64>(LIVE_WIDGETS.size)
+    for ((_, seq) in LIVE_WIDGETS) {
+        seqs.add(seq)
+    }
+    let arr = Array<Int64>(seqs.size, repeat: 0)
+    var i: Int64 = 0
+    for (s in seqs) {
+        arr[i] = s
+        i += 1
+    }
+    // 数量是"泄漏的控件数"，通常个位数；直接插入排序，省掉 std.sort 依赖
+    var k: Int64 = 1
+    while (k < arr.size) {
+        let v = arr[k]
+        var j = k - 1
+        while (j >= 0 && arr[j] > v) {
+            arr[j + 1] = arr[j]
+            j -= 1
+        }
+        arr[j + 1] = v
+        k += 1
+    }
+    arr
+}
+
 /**
  * LVGL 事件分发器：C 侧只见这个静态函数。
  * 回调异常在这里捕获，不能跨 C 边界传播。
@@ -119,12 +214,110 @@ func cjEventDispatch(e: CPointer<lv_event_t>): Unit {
             if (hub.dispatchDepth == 0) {
                 hub.compact()
             }
-            // LVGL 删除对象时会发 LV_EVENT_DELETE（父对象递归删除子对象时也会发），
-            // 在这里回收整个 hub，避免长跑后订阅表只增不减。
-            if (code == LV_EVENT_DELETE) {
-                removeEventHub(addr)
-            }
         case None => ()
+    }
+    // LVGL 删除对象时会发 LV_EVENT_DELETE（父对象递归删除子对象时也会发）。
+    // 这里做与「有没有订阅者」无关的收尾：回收订阅表 + 释放保活的缓冲/引用，
+    // 避免长跑后注册表只增不减，也避免保活数据跟着已死的包装对象一起烂在内存里。
+    if (code == LV_EVENT_DELETE) {
+        removeEventHub(addr)
+        freeKeepSlot(addr)
+        untrackWidget(addr)
+        HOOKED.remove(addr)
+    }
+}
+
+/**
+ * 确保该 lv_obj 挂着 cjEventDispatch（没有订阅者也要挂）：
+ * 保活数据要靠 LV_EVENT_DELETE 这个唯一的「对象即将消失」时机来释放。
+ */
+private func ensureHook(handle: CPointer<lv_obj_t>): Unit {
+    let addr = handle.toUIntNative()
+    if (HOOKED.contains(addr)) {
+        return
+    }
+    HOOKED.add(addr)
+    unsafe {
+        lv_obj_add_event_cb(handle, cjEventDispatch, LV_EVENT_ALL, CPointer<Unit>())
+    }
+}
+
+/**
+ * 登记一个 owned 控件（仅追踪开启时生效）。
+ * 同时确保挂上 cjEventDispatch：控件可能从不订阅事件，但如果它被父对象
+ * 递归删除，只有挂着回调才能收到 LV_EVENT_DELETE 并在这里注销。
+ */
+private func trackWidget(handle: CPointer<lv_obj_t>): Unit {
+    if (!trackingOn) {
+        return
+    }
+    LIVE_WIDGETS.add(handle.toUIntNative(), nextLiveSeq)
+    nextLiveSeq += 1
+    ensureHook(handle)
+}
+
+private func keepSlotOf(handle: CPointer<lv_obj_t>): KeepSlot {
+    let addr = handle.toUIntNative()
+    match (KEEPS.get(addr)) {
+        case Some(slot) => slot
+        case None =>
+            let slot = KeepSlot()
+            KEEPS.add(addr, slot)
+            ensureHook(handle)
+            slot
+    }
+}
+
+/** 让某个仓颉对象（Style / ImageDsc …）活到 lv_obj 被删除为止（追加式） */
+internal func keepRef(handle: CPointer<lv_obj_t>, obj: Object): Unit {
+    keepSlotOf(handle).refs.add(obj)
+}
+
+/** 替换保活的 C 侧裸缓冲：登记新缓冲并释放旧的（替换式，同一时刻只留一个） */
+internal func replaceKeepBuf(handle: CPointer<lv_obj_t>, buf: CPointer<Unit>): Unit {
+    let slot = keepSlotOf(handle)
+    if (!slot.cBuf.isNull()) {
+        unsafe { LibC.free(slot.cBuf) }
+    }
+    slot.cBuf = buf
+}
+
+/** 替换保活的仓颉对象列表（替换式，用于换帧/换源时清掉上一批） */
+internal func replaceKeepRefs(handle: CPointer<lv_obj_t>, objs: ArrayList<Object>): Unit {
+    let slot = keepSlotOf(handle)
+    slot.refs.clear()
+    for (o in objs) {
+        slot.refs.add(o)
+    }
+}
+
+/**
+ * 清空所有保活槽（`App.shutdown()` 调用）。
+ *
+ * `lv_deinit()` 直接释放 LVGL 内存池，不会为每个对象派发 `LV_EVENT_DELETE`，
+ * 所以必须在这里主动把我们 `malloc` 的缓冲 free 掉，并清空各张按地址索引的表 ——
+ * 否则下次 `App.setup()` 后地址复用会撞上上一轮的残留条目。
+ */
+internal func releaseAllKeeps(): Unit {
+    let addrs = ArrayList<UIntNative>(KEEPS.size)
+    for ((addr, _) in KEEPS) {
+        addrs.add(addr)
+    }
+    for (a in addrs) {
+        freeKeepSlot(a)
+        removeEventHub(a)
+    }
+    KEEPS.clear()
+    EVENT_HUBS.clear()
+    HOOKED.clear()
+    LIVE_WIDGETS.clear()
+}
+
+/** 当前保活的仓颉对象个数（调试/测试用） */
+internal func keptRefCount(handle: CPointer<lv_obj_t>): Int64 {
+    match (KEEPS.get(handle.toUIntNative())) {
+        case Some(slot) => slot.refs.size
+        case None => 0
     }
 }
 
@@ -181,44 +374,47 @@ public class Event {
 
 /* ==================== Widget 基类 ==================== */
 
-public open class Widget {
+/**
+ * 控件基类。同时实现 `Resource`，因此可以用 try-with-resources 让释放跟着作用域走：
+ *
+ * ```cangjie
+ * try (btn = Button(scr)) {
+ *     btn.text("确定")
+ *     ...
+ * }   // 作用域结束（含异常路径）自动 close()，不依赖 GC
+ * ```
+ */
+public open class Widget <: Resource {
     protected var handle: CPointer<lv_obj_t>
     private let owned: Bool
     private var alive: Bool = true
     private var deleteRequested: Bool = false
-    // 借给本控件的样式。LVGL 的 lv_obj_add_style / lv_spangroup_set_span_style
-    // 只保存 lv_style_t*，不持有仓颉对象；这里把 Style 强引用挂到控件上，
-    // 保证「临时 Style」也不会在绘制前被 GC 回收（否则就是偶发花屏/UAF）。
-    private var keptStyles: Option<ArrayList<Style>> = None
 
     internal init(handle: CPointer<lv_obj_t>, owned!: Bool = true) {
         this.handle = handle
         this.owned = owned
+        if (owned) {
+            trackWidget(handle)
+        }
     }
 
     /**
-     * 登记一个"LVGL 只存指针"的样式，让它活到本控件销毁为止。
+     * 登记一个"LVGL 只存指针"的样式，让它活到本控件**被 LVGL 删除**为止。
      * 由 `Style.applyTo()` / `SpanPart.style()` 内部调用，业务侧不需要手动调。
+     *
+     * 注意这里不挂在包装对象上，而是登记到按 lv_obj 地址索引的保活表：
+     * 包装对象可能先被 GC（时机不可控），而 lv_obj 还在屏上。
      */
     internal func keepStyle(st: Style): Unit {
-        match (keptStyles) {
-            case Some(list) => list.add(st)
-            case None =>
-                let list = ArrayList<Style>()
-                list.add(st)
-                keptStyles = Some(list)
-        }
+        keepRef(handle, st)
     }
 
     /**
-     * 当前被本控件保活的样式数量。
-     * 业务侧一般不需要；用于排查「样式是否真的被挂上了」以及测试断言。
+     * 当前被本控件保活的仓颉对象数量（样式、图像描述符等累加）。
+     * 业务侧一般不需要；用于排查「保活是否真的挂上了」以及测试断言。
      */
     public func keptStyleCount(): Int64 {
-        match (keptStyles) {
-            case Some(list) => list.size
-            case None => 0
-        }
+        keptRefCount(handle)
     }
 
     /* ---- 几何 ---- */
@@ -290,9 +486,7 @@ public open class Widget {
                 let created = EventHub()
                 EVENT_HUBS.add(addr, created)
                 // 每个对象只注册一个 C 回调，事件过滤在仓颉侧完成。
-                unsafe {
-                    lv_obj_add_event_cb(handle, cjEventDispatch, LV_EVENT_ALL, CPointer<Unit>())
-                }
+                ensureHook(handle)
                 created
         }
         let id = nextEventId
@@ -350,8 +544,13 @@ public open class Widget {
         alive = false
         deleteRequested = true
         let addr = handle.toUIntNative()
+        // lv_obj_delete 内部会同步派发 LV_EVENT_DELETE：
+        // 订阅表与保活槽都由 cjEventDispatch 收尾，这里再做一次只是兜底（幂等）。
         unsafe { lv_obj_delete(handle) }
         removeEventHub(addr)
+        freeKeepSlot(addr)
+        untrackWidget(addr)
+        HOOKED.remove(addr)
     }
 
     /**
@@ -373,6 +572,33 @@ public open class Widget {
     /** 是否已经请求删除（异步删除完成前也会返回 true） */
     public func isDeleted(): Bool {
         !alive || deleteRequested
+    }
+
+    /** `Resource` 接口：控件是否已释放（供 try-with-resources 判断要不要 close） */
+    public func isClosed(): Bool {
+        isDeleted()
+    }
+
+    /**
+     * `Resource` 接口：立即释放控件，等价于 `finalize()`，但**不抛异常**。
+     *
+     * 与 `finalize()` 的差别只有两点，都是为了适配 try-with-resources：
+     * ① 借用视图（`Screen`/`Event.target()`）静默返回，避免作用域结束时抛异常打断业务；
+     * ② 重复调用安全（不抛）。
+     * 需要「误用时立刻发现」请继续用 `finalize()`。
+     */
+    public func close(): Unit {
+        if (!owned || !alive || deleteRequested) {
+            return
+        }
+        alive = false
+        deleteRequested = true
+        let addr = handle.toUIntNative()
+        unsafe { lv_obj_delete(handle) }
+        removeEventHub(addr)
+        freeKeepSlot(addr)
+        untrackWidget(addr)
+        HOOKED.remove(addr)
     }
 
     /** 内容变化后触发重绘 */

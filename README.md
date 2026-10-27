@@ -132,9 +132,12 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 调试点：`App.enableThreadAssert(true)` 后，`Widget.onEvent` / `Timer.every` / `Style.applyTo`
 在非 UI 线程调用会直接抛 `LvglException`（带两边的线程 id），不必等花屏或堆损坏才发现。
 
-> **注意终结器不在主线程**：实测仓颉 1.2.0 的 `~init` 跑在独立 GC 线程上（主线程 id=1、终结器 id=2）。
-> 因此 `Style` 的释放会回投到 UI 线程（`App.releaseStyle`）；只做 `free` 的终结器不受影响。
-> 细节见 `docs/api-reference.md` 的「0.3 线程模型」。
+> **不要依赖终结器**：实测仓颉 1.2.0 的 `~init` 跑在独立 GC 线程上（主线程 id=1、终结器 id=2），
+> 而且**触发时机由分配压力决定**（丢引用后 sleep 1s 不回收、UI 帧循环 300 帧一次都不触发、进程退出也不保证执行）。
+> 更关键的是 `Widget` 是 `open` 类，仓颉**不允许 open 类带终结器**，所以控件只能显式释放：
+> `finalize()` / `delete()` / `close()`，或者用 `try (w = Button(scr)) { ... }` 跟着作用域走。
+> 控件里那些"LVGL 只存指针"的缓冲（顶点数组、日期数组、样式、图像描述符）则登记在按 `lv_obj` 地址
+> 索引的保活表里，随控件删除同步释放，与 GC 时机无关。细节见 `docs/api-reference.md` 的「0.3 / 0.4」。
 
 ### 4. 友好 API 层（包 `lvglcj`）能力清单
 
@@ -156,6 +159,8 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | 定时器 | `Timer.every(ms, cb)` / `Timer.once(ms, cb)` | 返回 `TimerHandle`：`cancel/pause/resume/ready/setPeriod`；cb 运行在主线程，可直接操作控件；一次性定时器触发后自动失效 |
 | 主题 | `Theme.default(primary, secondary, dark, font)` | 一行切换全局主题与深色模式 |
 | 诊断 | `Perf.fps()` / `Mem.monitor()` | 读取 FPS/CPU 占用与内存碎片，配合 `LV_USE_PERF_MONITOR` |
+| **确定性释放** | `Widget <: Resource` | `try (w = Button(scr)) { ... }` 出作用域（含异常路径）自动 `close()`，不依赖 GC；也支持显式 `finalize()`/`delete()` |
+| 泄漏排查 | `App.enableWidgetTracking()` / `App.reportLiveWidgets()` | 开启后统计未释放控件（关闭时零开销），用于定位"忘了 finalize" |
 | 错误处理 | 全部抛 `Exception` / `App.onCallbackError` | LVGL 9 的参数校验断言族（`LV_USE_ASSERT_NULL`/`LV_USE_ASSERT_MALLOC` 默认开启，`LV_USE_ASSERT_OBJ` 等可按需在 `lv_conf.h` 打开），本层把返回的 `LV_RESULT_INVALID` 转为异常；事件/定时器/post 任务中的回调异常统一兜底，可注册处理器 |
 
 ### 5. 平台支持矩阵（开发机 vs 真机）
@@ -298,10 +303,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 | `LV_USE_THORVG_INTERNAL` | **0** | 0 | Zero 2 W 上矢量图形性价比低，关掉省 Flash |
 | `LV_USE_ASSERT_MEM_INTEGRITY` / `LV_USE_ASSERT_OBJ` | **0** | 1 | 发布版必须关，开着会显著变慢 |
 | `LV_DEF_REFR_PERIOD` | **33**（≈30 fps） | 16 | 按面板刷新率与算力定 |
-| `LV_MEM_SIZE` | **128 KB**（复杂 UI 提到 256 KB） | 256 KB | LVGL 自带内存池 |
+| `LV_MEM_SIZE` | **512 KB**（开了 FreeType，字形位图要吃 draw_buf） | 256 KB | LVGL 自带内存池 |
 | `LV_USE_SYSMON` | 1（调试）→ 0（发布） | 1 | 9.5 起 PERF/MEM 监控挂在 SYSMON 下，`LV_USE_SYSMON=0` 会把它们强行改回 0 |
 | `LV_USE_PERF_MONITOR` | 1（调试）→ 0（发布） | 1 | FPS / CPU 占用 |
-| `LV_USE_FREETYPE` | 0（可开） | **1** | 运行时加载系统 TTF/TTC 显示完整中文；开它需给编译器补 freetype 头文件路径，链接补 `-lfreetype` |
+| `LV_USE_FREETYPE` | **1** | **1** | 运行时加载系统 TTF/TTC 显示完整中文；开它需给编译器补 freetype 头文件路径（交叉编译见 `scripts/build-lvgl-pi.sh` 的 `FT_INC`），链接补 `-lfreetype` |
 | `LV_USE_LODEPNG` | **1** | **1** | PNG 解码（`Image.fromFile`）；LVGL 内置、零外部依赖，约 +170 KB |
 | `LV_USE_FS_STDIO` + `LV_FS_STDIO_LETTER` | **1** / `'A'` | **1** / `'A'` | 文件系统 STDIO 驱动；垫片把系统路径拼成 `A:<path>`。关掉则 `fromFile` 直接抛异常 |
 | `LV_USE_IME_PINYIN` | **1** | **1** | 拼音输入法（`ImePinyin` 的候选词面板）；LVGL 9.5 默认 0，本仓库两份配置都显式打开并重编了静态库 |
@@ -421,7 +426,7 @@ lvglcj/
 > 状态说明：步骤 1–8 已完成并双平台实测：
 > - **Windows + MSYS2 UCRT64**：`./scripts/build-lvgl-sdl.ps1` → `lib/windows-x64/`；`cjpm build` 与 `examples` 的 `cjpm build --cfg` 均 0 error；九个示例逐一弹窗。
 > - **WSL（Ubuntu-dev）+ WSLg**：`scripts/build-lvgl-sdl.sh` → `lib/linux-x64/`；`cjpm build` / `cjpm build --cfg` 编译通过。
-> - **单测**：`cjpm test` 共 49 个用例（36 通过 + 13 个 `requires_display` 窗口用例跳过），0 失败。
+> - **单测**：`cjpm test` 与 display 用例全部通过（当时 49 个用例；后续补了保活/释放回归，现为 62 个，最新数据见「单元测试」一节）。
 >   > 本机 WSLg 的 Xwayland 报 `your 131072x1 screen size is bogus`，窗口投不到 Windows 桌面，因此 WSL 侧只做**无窗口验证**（控件真实创建、日历日期读写、帧动画帧数组与播放路径均已覆盖），视觉确认以 Windows 截图与 Pi 真机截图为准。
 > - **交叉编译**：`scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`，`readelf` 校验 `ELF64 / Machine: AArch64`，DRM/evdev 符号已编入。
 > - **仓颉侧 aarch64 产物不需要单独的 aarch64 SDK**：用本机 linux-x64 的 cjc，`cjpm.toml` 里配 `--target aarch64-unknown-linux-gnu --sysroot /usr/aarch64-linux-gnu --static`，静态链接后 scp 到 Pi 直接运行（约 7 MB，不依赖目标机上的仓颉运行时）。
@@ -567,9 +572,9 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows / WSL，2026-10）：**56 个用例，39 passed / 17 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **17 个 display 用例全部 passed**
-（有桌面时短暂弹出 320×240 的 LVGL 窗口；`SDL_VIDEODRIVER=dummy` 时在内存里渲染，CI 就是这么跑的）。
+实测结果（Windows / WSL，2026-10）：**62 个用例，39 passed / 23 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **23 个 display 用例全部 passed**
+（默认自动切到 `SDL_VIDEODRIVER=dummy`，在内存里渲染、**不弹窗口**；想看画面加 `LVGLCJ_TEST_REAL_WINDOW=1`）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
 |---|---|---|
@@ -580,15 +585,20 @@ cjpm test
 | `style_test.cj` | `Style` 链式、`Font` 工厂与 `close()` 语义 | 需 lv_init |
 | `app_test.cj` | `App.post`（含跨线程）、回调异常处理、`TimerHandle` 的 ready/cancel/一次性失效 | 否 |
 | `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile**、**`Line` 顶点保活（refreshNow 真画一帧）/ `Image.setSource` 句柄保活** | **是**，打 `@Tag[requires_display]` |
+| `keepalive_test.cj` | **try-with-resources 自动释放**、`close()` 幂等、借用视图 `close()` 静默、同一 `Style` 挂多控件删其一不影响其余、**泄漏追踪计数随生命周期变化**、`Line` 缓冲随控件释放 | **是**，打 `@Tag[requires_display]` |
 
 需要 display 的用例默认被 `[profile.test].exclude-tags` 排除（本地不弹窗、无图形环境不报错）。
 注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：
 
 ```bash
-cjpm test --include-tags=requires_display --exclude-tags=notag   # 有桌面：会真的弹一个 320x240 窗口
+cjpm test --include-tags=requires_display --exclude-tags=notag   # 默认 dummy 驱动，不弹窗
 
-SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag   # 无头环境
+LVGLCJ_TEST_REAL_WINDOW=1 cjpm test --include-tags=requires_display --exclude-tags=notag   # 想肉眼看画面
 ```
+
+> 测试进程没有 SDL 事件循环，**真窗口会一直"无响应"**，人工点掉后 display 失效、
+> 后续用例连带失败（症状是某个类 `@BeforeAll` 卡几十秒后报 `Before all step failed`）。
+> 所以测试默认用 dummy 驱动。
 
 > `@Tag` 只接受**标识符**：写 `@Tag[requires_display]`，不能写成 `@Tag["requires_display"]`（宏会报 "Illegal parameters for @Tag"）。
 >
