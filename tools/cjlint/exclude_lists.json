@@ -23,7 +23,7 @@
         {"path": "style_test.cj", "line": "14"},
         {"path": "test_support_test.cj", "line": "26"},
         {"path": "version_test.cj", "line": "12"},
-        {"path": "widget_test.cj", "line": "21"}
+        {"path": "widget_test.cj", "line": "30"}
     ],
     "G.NAM.01": [
         {"path": "app_test.cj", "line": "6"},
@@ -33,7 +33,7 @@
         {"path": "style_test.cj", "line": "7"},
         {"path": "test_support_test.cj", "line": "9"},
         {"path": "version_test.cj", "line": "5"},
-        {"path": "widget_test.cj", "line": "12"}
+        {"path": "widget_test.cj", "line": "21"}
     ],
     "G.NAM.03": [
         {"path": "app_test.cj", "line": "12"},
@@ -64,7 +64,7 @@
         {"path": "style_test.cj", "line": "14"},
         {"path": "test_support_test.cj", "line": "26"},
         {"path": "version_test.cj", "line": "12"},
-        {"path": "widget_test.cj", "line": "21"}
+        {"path": "widget_test.cj", "line": "30"}
     ],
     "G.PKG.01": [
         {"path": "app.cj", "line": "9"},
@@ -92,11 +92,11 @@
         {"path": "version_test.cj", "line": "7"},
         {"path": "version_test.cj", "line": "8"},
         {"path": "version_test.cj", "line": "9"},
-        {"path": "widget_test.cj", "line": "14"},
-        {"path": "widget_test.cj", "line": "15"},
-        {"path": "widget_test.cj", "line": "16"},
-        {"path": "widget_test.cj", "line": "17"},
-        {"path": "widget_test.cj", "line": "18"},
+        {"path": "widget_test.cj", "line": "23"},
+        {"path": "widget_test.cj", "line": "24"},
+        {"path": "widget_test.cj", "line": "25"},
+        {"path": "widget_test.cj", "line": "26"},
+        {"path": "widget_test.cj", "line": "27"},
         {"path": "widget.cj", "line": "15"},
         {"path": "widget_media.cj", "line": "8"},
         {"path": "widget_rich.cj", "line": "8"}
@@ -125,6 +125,6 @@
         {"path": "widget_media.cj", "line": "152"},
         {"path": "widget_rich.cj", "line": "175"},
         {"path": "widget_rich.cj", "line": "253"},
-        {"path": "widget_test.cj", "line": "21"}
+        {"path": "widget_test.cj", "line": "30"}
     ]
 }

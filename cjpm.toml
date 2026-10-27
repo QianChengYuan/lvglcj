@@ -43,8 +43,13 @@ incremental = true
 
 [profile.test]
 # 单元测试默认参数（测试源码在 src/test/，package lvglcj.test）
-# 需要真实显示窗口的用例打了 @Tag[requires_display]，默认排除；
-# 想跑它们：cjpm test --include-tags=requires_display
+# 需要 display 的用例打了 @Tag[requires_display]，默认排除（本地跑 cjpm test 不弹窗、
+# 无图形环境也不会整片 ERROR）。想跑它们必须**同时**顶掉这里的排除项，
+# 只加 --include-tags 是无效的（--include 不覆盖配置里的 exclude-tags）：
+#     cjpm test --include-tags=requires_display --exclude-tags=notag
+# 无头环境（CI）再加 SDL_VIDEODRIVER=dummy，让 SDL 建出内存里的 display：
+#     SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag
+# 等价入口：scripts/build.ps1 -DisplayTests / scripts/build.sh --display-tests
 exclude-tags = "requires_display"
 timeout-each = "60s"
 

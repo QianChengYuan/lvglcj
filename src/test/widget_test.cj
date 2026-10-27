@@ -1,13 +1,22 @@
 /**
- * widget.cj / display.cj —— 需要真实 display 与屏幕的用例。
+ * widget*.cj / display.cj —— 需要 display 与屏幕的用例。
  *
- * 全部打了 @Tag[requires_display]，cjpm.toml 的 [profile.test] 默认排除它们。
- * @BeforeAll 会尝试创建 SDL 显示，但无头环境（CI）下创建失败只记录原因、
- * 不中断测试进程；因此默认的 cjpm test 不依赖桌面或 Xvfb。
+ * 全部打了 @Tag[requires_display]，cjpm.toml 的 [profile.test] 默认排除它们，
+ * 这样本地 cjpm test 不会弹窗、无图形环境的机器也不会整片 ERROR。
  *
- * 单独运行：
- *   cjpm test --include-tags=requires_display
- *   （会真的弹出 320x240 的 LVGL 窗口，属于人工验证）
+ * 想跑必须**同时**顶掉配置里的排除项（只加 --include-tags 是无效的）：
+ *
+ *   # 有桌面：会真的弹出 320x240 的 LVGL 窗口
+ *   cjpm test --include-tags=requires_display --exclude-tags=notag
+ *
+ *   # 无头环境（CI）：SDL dummy 驱动建出内存里的 display，绘制照常执行
+ *   SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag
+ *
+ * 等价入口：scripts/build.ps1 -DisplayTests / scripts/build.sh --display-tests。
+ *
+ * @BeforeAll 里创建 SDL 显示失败只记录原因、不中断整个测试进程（此时 screen()
+ * 抛异常，这些用例会单独失败而不是把进程带崩）。注意它只 catch LvglException，
+ * C 侧直接 abort/段错误是兜不住的 —— 这也是默认不启用它们的另一半理由。
  */
 package lvglcj.test
 

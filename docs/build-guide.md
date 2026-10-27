@@ -303,16 +303,18 @@ cfg = "--cfg=\"lv_backend=sdl\""
 
 ```bash
 export LVGLCJ_LIB_DIR=lib/linux-x64      # Windows: $env:LVGLCJ_LIB_DIR = "lib/windows-x64"
-cjpm test                                # 实测 29 passed / 11 skipped / 0 failed
-# 含窗口用例（会真的弹 320x240 窗口）；注意 --include-tags 不会覆盖配置里的
-# exclude-tags，必须用一个不存在的 tag 把它顶掉
-cjpm test --include-tags=requires_display --exclude-tags=notag
+cjpm test                                # 实测 56 个用例：39 passed / 17 skipped / 0 failed
+
+# 含 display 用例。注意 --include-tags 不会覆盖配置里的 exclude-tags，
+# 必须用一个不存在的 tag 把它顶掉
+cjpm test --include-tags=requires_display --exclude-tags=notag   # 有桌面：会真的弹 320x240 窗口
+SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag  # 无头/CI
 ```
 
 三个注意点：
 
 1. **测试二进制也要链接 `-lSDL2 -lfreetype`**：本库 `cjpm.toml` 已用 `[target.<triple>]` 的 `link-option` 声明，Windows 上还要保证 `SDL2.dll` / `libfreetype-6.dll` 在 `PATH`；
-2. 依赖真实屏幕的用例打 `@Tag[requires_display]`，由 `[profile.test].exclude-tags` 默认排除，适合无头环境与 CI；
+2. 需要 display 的用例打 `@Tag[requires_display]`，由 `[profile.test].exclude-tags` 默认排除 —— 这样默认那轮不弹窗、无图形环境也不整片 ERROR；CI 会再加一轮显式执行（`--display-tests` / `-DisplayTests`，自动设 `SDL_VIDEODRIVER=dummy`）；
 3. `@Tag` 的标签必须是**标识符**（`@Tag[requires_display]`），不能加引号；`@ExpectThrows` 用括号形式 `@ExpectThrows[LvglException](expr)`。
 
 ## 6. 手工构建配方（不用脚本）

@@ -567,8 +567,8 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows / WSL，2026-10）：**54 个用例，39 passed / 15 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **15 个窗口用例全部 passed**
+实测结果（Windows / WSL，2026-10）：**56 个用例，39 passed / 17 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **17 个 display 用例全部 passed**
 （有桌面时短暂弹出 320×240 的 LVGL 窗口；`SDL_VIDEODRIVER=dummy` 时在内存里渲染，CI 就是这么跑的）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
@@ -581,10 +581,13 @@ cjpm test
 | `app_test.cj` | `App.post`（含跨线程）、回调异常处理、`TimerHandle` 的 ready/cancel/一次性失效 | 否 |
 | `widget_test.cj` | 几何、`setTextFmt`、Slider 取值、Button 标志、**事件订阅/取消/删除回收**、Canvas 绘制、Theme、**SpanGroup / Calendar / AnimImage / Image.fromFile**、**`Line` 顶点保活（refreshNow 真画一帧）/ `Image.setSource` 句柄保活** | **是**，打 `@Tag[requires_display]` |
 
-需要真实屏幕的用例默认被 `[profile.test].exclude-tags` 排除（无头环境开不了 SDL 窗口）。注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：
+需要 display 的用例默认被 `[profile.test].exclude-tags` 排除（本地不弹窗、无图形环境不报错）。
+注意 **`--include-tags` 不会覆盖配置里的 `exclude-tags`**，必须用一个不存在的 tag 顶掉它：
 
 ```bash
-cjpm test --include-tags=requires_display --exclude-tags=notag   # 会真的弹一个 320x240 的 LVGL 窗口
+cjpm test --include-tags=requires_display --exclude-tags=notag   # 有桌面：会真的弹一个 320x240 窗口
+
+SDL_VIDEODRIVER=dummy cjpm test --include-tags=requires_display --exclude-tags=notag   # 无头环境
 ```
 
 > `@Tag` 只接受**标识符**：写 `@Tag[requires_display]`，不能写成 `@Tag["requires_display"]`（宏会报 "Illegal parameters for @Tag"）。
