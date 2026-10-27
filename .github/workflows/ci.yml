@@ -3,12 +3,14 @@
 # ------------------------------------------------------------
 # 触发：push / PR 到 master，以及手动 workflow_dispatch。
 # 平台：
-#   - Linux x64（ubuntu-24.04）：格式 + 静态检查、编译、单元测试、examples
-#   - Windows x64（windows-2022）：编译、单元测试、examples（MSYS2 UCRT64 依赖）
+#   - Linux x64（ubuntu-24.04）：格式 + 静态检查、编译、单元测试、examples、
+#     requires_display 用例（SDL dummy 驱动）、ASan 内存检查（手动触发）
+#   - Windows x64（windows-2022）：编译、单元测试、examples、requires_display 用例
 # 说明：
 #   - SDK 由 .github/actions/setup-cangjie 通过官方直链安装并校验 SHA-256；
 #   - 格式检查固定在 Linux 上跑（Windows checkout 可能被 autocrlf 改成 CRLF）；
-#   - lib/linux-x64、lib/windows-x64 是提交进仓库的预编译 LVGL 静态库。
+#   - lib/*/ 是提交进仓库的预编译 LVGL 静态库，校验和由 SHA256SUMS 强制比对；
+#   - ASan job 需要现场重编插桩版 LVGL，只手动触发且 continue-on-error。
 # ============================================================
 
 name: CI
@@ -74,21 +76,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsdl2-dev libfreetype-dev
 
-      - name: 校验预编译静态库
+      # 预编译 .a 是提交进仓库的二进制，必须钉住内容：BUILD_INFO.md 记录来源，
+      # SHA256SUMS 由本步骤强制校验（改配置/垫片重编后要同步更新这个文件）。
+      - name: 校验预编译静态库（SHA-256）
         run: |
-          test -f "$LVGLCJ_LIB_DIR/liblvgl.a"
-          test -f "$LVGLCJ_LIB_DIR/liblvglcjshim.a"
+          test -f "$LVGLCJ_LIB_DIR/BUILD_INFO.md"
+          cd "$LVGLCJ_LIB_DIR"
+          sha256sum -c SHA256SUMS
 
-      - name: 编译库
-        run: cjpm build
+      - name: 编译 + 单元测试 + examples
+        run: bash scripts/build.sh --test --examples
 
-      - name: 单元测试
-        run: cjpm test
-
-      - name: 编译 examples
-        run: |
-          cd examples
-          cjpm build --cfg
+      # requires_display 用例默认被 [profile.test] 排除；CI 用 SDL dummy 视频驱动
+      # 把它们真跑起来（Display.sdl 能建出内存里的 display，不需要桌面）。
+      - name: requires_display 用例（SDL dummy 驱动）
+        run: bash scripts/build.sh --display-tests
 
   windows:
     name: Windows x64 编译与测试
@@ -131,29 +133,64 @@ jobs:
           & $gcc --version
           "MSYS2_UCRT64_BIN=$ucrt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: 校验预编译静态库
+      - name: 校验预编译静态库（SHA-256）
         shell: pwsh
         run: |
-          if (-not (Test-Path "$env:LVGLCJ_LIB_DIR\liblvgl.a")) { throw "缺少 liblvgl.a" }
-          if (-not (Test-Path "$env:LVGLCJ_LIB_DIR\liblvglcjshim.a")) { throw "缺少 liblvglcjshim.a" }
+          if (-not (Test-Path "$env:LVGLCJ_LIB_DIR\BUILD_INFO.md")) { throw "缺少 BUILD_INFO.md" }
+          Get-Content "$env:LVGLCJ_LIB_DIR\SHA256SUMS" | ForEach-Object {
+            if (-not $_.Trim()) { return }
+            $expected, $name = $_ -split '\s+', 2
+            $path = Join-Path $env:LVGLCJ_LIB_DIR $name.Trim()
+            if (-not (Test-Path $path)) { throw "缺少 $path" }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected.ToLower()) { throw "SHA-256 不匹配：$name（期望 $expected，实际 $actual）" }
+          }
 
       # SDK 的 tools\bin 里有 libwinpthread-1.dll 等运行库，必须让 MSYS2 UCRT64
-      # 排在它前面，否则 SDL2 / FreeType 会加载到不匹配的 DLL。
-      - name: 编译库
+      # 排在它前面，否则 SDL2 / FreeType 会加载到不匹配的 DLL（症状：入口点找不到）。
+      # scripts/build.ps1 也会做同样的前置，这里显式设一次便于排障。
+      - name: 编译 + 单元测试 + examples
         shell: pwsh
         run: |
           $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
-          cjpm build
+          pwsh -NoProfile -File scripts/build.ps1 -Test -Examples
 
-      - name: 单元测试
+      - name: requires_display 用例（SDL dummy 驱动）
         shell: pwsh
         run: |
           $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
-          cjpm test
+          pwsh -NoProfile -File scripts/build.ps1 -DisplayTests
 
-      - name: 编译 examples
-        shell: pwsh
+  # 内存检查单独一个 job：必须把 LVGL 本体用 -fsanitize=address 重编
+  # （预编译的 .a 没插桩，ASan 抓不到 LVGL 内部的悬垂访问）。
+  # 代价是要现场 clone + 编 LVGL（几分钟），所以只在手动触发时跑、且不阻塞合并。
+  asan:
+    name: ASan 内存检查（手动，非阻塞）
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    needs: [lint]
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装仓颉 SDK
+        uses: ./.github/actions/setup-cangjie
+        with:
+          os: linux
+          version: "1.2.0"
+
+      - name: 安装依赖
         run: |
-          $env:PATH = "$env:MSYS2_UCRT64_BIN;$env:PATH"
-          cd examples
-          cjpm build --cfg
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+                                  libsdl2-dev libfreetype-dev libevdev-dev
+
+      - name: 拉 LVGL v9.5.0 源码
+        run: git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git "$RUNNER_TEMP/lvgl"
+
+      - name: 编 ASan 插桩库
+        run: LVGL_SRC="$RUNNER_TEMP/lvgl" bash scripts/build-lvgl-asan.sh
+
+      - name: 跑 ASan 用例
+        run: bash scripts/asan-test.sh
