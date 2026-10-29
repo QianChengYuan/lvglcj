@@ -7,31 +7,40 @@
 |---|---|
 | 目标平台 | Linux aarch64（ELF 64-bit LSB, AArch64） |
 | LVGL 版本 | **v9.5.0**（tag，源码来自 `gitcode.com/gh_mirrors/lvgl/lvgl`） |
-| 配置源 | `native/config/pi/lv_conf.h` |
-| 配置快照 SHA-256 | `f4983b3c66d28d7fb4d84048847f866e693a4fe7765f77adffcd16fc63642027`（**旧**） |
+| 配置源 | `native/config/pi/lv_conf.h`（91 行） |
+| 配置快照 SHA-256 | `dfb1d25147c6ed8506684b5d9b74280f1a65830af274a4a7635b09079f3e9d66` |
 | 构建脚本 | `scripts/build-lvgl-pi.sh`（工具链 `cmake/toolchain-aarch64.cmake`） |
-| 编译器 | `aarch64-linux-gnu-gcc` 13.x（Ubuntu 交叉包）+ cmake/ninja |
+| 编译器 | `aarch64-linux-gnu-gcc` 13.3（Ubuntu 交叉包）+ cmake/ninja |
 | 产物 | `liblvgl.a`、`liblvglcjshim.a`（校验和见同目录 `SHA256SUMS`） |
 
-> ⚠️ **本目录产物已过期**：`native/config/pi/lv_conf.h` 之后又改过
-> （现为 91 行，SHA-256 `dfb1d25147c6ed8506684b5d9b74280f1a65830af274a4a7635b09079f3e9d66`），
-> 新增了内置 CJK 子集、`LV_USE_FREETYPE=1`、`LV_MEM_SIZE=512KB` 等。
-> 下面的开关表只描述**已提交的旧产物**，重跑 `scripts/build-lvgl-pi.sh` 后需整体更新。
-
-旧产物的关键开关（对应上面的旧快照）：
+关键开关（以 `lv_conf.h` 为准）：
 
 ```
-LV_COLOR_DEPTH 16           LV_USE_LINUX_DRM 1          LV_USE_LINUX_FBDEV 0
-LV_USE_SDL 0                LV_USE_EVDEV 1              LV_MEM_SIZE 128KB
+LV_COLOR_DEPTH 16           LV_USE_LINUX_DRM 1         LV_USE_LINUX_FBDEV 0
+LV_USE_SDL 0                LV_USE_EVDEV 1             LV_MEM_SIZE 512KB
+LV_USE_FREETYPE 1           LV_FREETYPE_CACHE_FT_GLYPH_CNT 128
+LV_FONT_SOURCE_HAN_SANS_SC_16_CJK 1                     LV_USE_ASSERT_NULL 0
 LV_USE_LODEPNG 1            LV_USE_FS_STDIO 1           LV_USE_IME_PINYIN 1
 ```
 
-**旧产物的能力缺口（`nm` 实测）**：**未开 FreeType，也没有内置 CJK 字体** → Pi 上走 DRM 时没有落地中文的手段。
-需要中文请用 `lib/linux-arm64-sdl`（开了 FreeType），或按当前配置重编本目录。
+`nm` 实测能力（2026-10-29 重编）：`lv_freetype_init`、`lv_font_source_han_sans_sc_16_cjk`、
+`lv_ime_pinyin_create`、`lv_spangroup_create`、`lv_calendar_add_header_arrow`、
+`lv_animimg_set_src`、`lv_subject_init_int`、`lv_label_bind_text`、`lv_linux_drm_create`、
+`lv_evdev_create` 均在；**无** `lv_sdl_window_create`（符合 SDL=0）。
+中文由「内置 16px 子集兜底 + FreeType 载系统字体」提供。
 
-重编后预期：`LV_USE_FREETYPE=1` + `LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=1`，
-中文由「内置 16px 子集兜底 + FreeType 载系统字体」提供；编译期需 arm64 的
-`freetype2` 头（脚本 `FT_INC`），链接期由使用方补 `-lfreetype`。
+重建（WSL，复用已有 LVGL 源码与独立构建目录）：
+
+```bash
+LVGL_DIR=/root/lvgl-build/lvgl-src \
+BUILD_DIR=/root/lvgl-build/pi-fresh \
+FT_INC=/root/aarch64-sdl/include \
+./scripts/build-lvgl-pi.sh
+```
+
+> 与 `lib/linux-arm64-sdl` 的差别：本目录走 DRM 直出 + evdev 输入，不依赖 SDL2；
+> 最终链接需要额外补 `-ldrm -levdev`（FreeType 仍需 `-lfreetype`），
+> 而 SDL 版补的是 `-lSDL2 -lfreetype`。
 
 **更新规则**：改 `native/config/pi/lv_conf.h` 或垫片后必须重编本目录产物，
 并同步更新本文件的「配置快照 SHA-256」与 `SHA256SUMS`。

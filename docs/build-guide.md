@@ -209,6 +209,9 @@ aarch64-linux-gnu-nm -g --defined-only lib/linux-arm64/liblvgl.a | grep -c evdev
 
 ### 4.4 `native/config/pi/lv_conf.h` 与模拟器版的关键差异
 
+另有一份 `native/config/pi-sdl/lv_conf.h`（Pi 桌面：SDL 后端 + FreeType 中文 + 512KB 池），
+对应产物 `lib/linux-arm64-sdl/`，差异项见该文件头部注释与 `lib/linux-arm64-sdl/BUILD_INFO.md`。
+
 | 宏 | `native/config/sdl/lv_conf.h` | `native/config/pi/lv_conf.h` |
 |---|---|---|
 | `LV_COLOR_DEPTH` | 32 | **16**（RGB565） |

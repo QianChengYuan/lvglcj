@@ -5,7 +5,7 @@
 | 目标平台 | Linux x86_64（ELF 64-bit LSB, ABI: UNIX - GNU） |
 | LVGL 版本 | **v9.5.0**（tag，源码来自 `gitcode.com/gh_mirrors/lvgl/lvgl`） |
 | 配置源 | `native/config/sdl/lv_conf.h`（与 Windows 共用，内含 `_WIN32` 分支） |
-| 配置快照 SHA-256 | `203a4e09a41a8d10da4030535d0cccc62ab297c9dcffa6627ee824c0d8d4b5c4` |
+| 配置快照 SHA-256 | `62a21647b4800e0f101a93ef1316a7b93323b3e7f9d781992f4c4b4a06e2c4e1`（产物编译时为 `203a4e09…`；之后仅修正了文件头注释里的路径，未重编，二进制不变） |
 | 构建脚本 | `scripts/build-lvgl-sdl.sh` |
 | 编译器 | Ubuntu 24.04 gcc 13.x + cmake 3.28 + ninja |
 | 产物 | `liblvgl.a`、`liblvglcjshim.a`（校验和见同目录 `SHA256SUMS`） |

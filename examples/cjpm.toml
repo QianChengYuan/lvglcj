@@ -21,11 +21,19 @@ lvglcj = { path = ".." }
 cfg = "--cfg=\"lv_backend=sdl\""
 
 # 交叉到 Pi（aarch64 + SDL 后端）：
+#   export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl
 #   export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib
 #   cjpm build --target aarch64-unknown-linux-gnu --cfg
 # 上面的全局 link-option 只适用于 x64；aarch64 需要显式 -L 到从 Pi 拷回来的 SDL2/FreeType。
 # --allow-shlib-undefined：libSDL2.so 自己依赖 libpulse/wayland/alsa/X11/gbm，
 # 交叉环境里没有这些 aarch64 库，但它们运行期由 Pi 提供，不需要在链接期解析。
+# --static 放在 compile-option 里会让 cjc 打印一条 "'--static' option is only effective
+# when compiling executables" 的告警，但它在链接阶段仍然生效：产物 `readelf -d` 里
+# 只有 libSDL2/libfreetype/libstdc++/libm/libc，没有 libcangjie-runtime.so。
+#
+# 用 DRM+evdev 版（lib/linux-arm64，tty 独占场景）时把下面的 link-option 换成：
+#   -L /usr/lib/aarch64-linux-gnu -ldrm -levdev -lfreetype
+# 并在 Pi 上装 libdrm2 / libevdev2（该配置没有 SDL 符号，不需要 -lSDL2）。
 [target.aarch64-unknown-linux-gnu]
 compile-option = "--sysroot /usr/aarch64-linux-gnu --static"
 link-option = "-L${LVGLCJ_AARCH64_SDL_LIB} -lSDL2 -lfreetype --allow-shlib-undefined"
