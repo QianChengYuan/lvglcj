@@ -101,8 +101,8 @@ echo "==> 完成：$OUT_DIR"
 ls -l "$OUT_DIR"
 ${CROSS}readelf -h "$OUT_DIR/liblvgl.a" 2>/dev/null | grep -m1 Machine
 echo
-echo "注意：仓颉侧交叉到 aarch64 需要 linux-aarch64 版 SDK（cjc --target），"
-echo "      linux-x64 SDK 只能本机编译；详见 docs/build-guide.md。"
+echo "注意：仓颉侧交叉用 linux-x64 SDK 即可（cjc --target aarch64-unknown-linux-gnu），"
+echo "      不需要单独的 aarch64 SDK；详见 docs/build-guide.md 4.5。"
 if [ ${#FT_CFLAGS[@]} -gt 0 ]; then
   echo "      本次产物含 FreeType 字体后端：最终链接需在 Pi 上补 -lfreetype（libfreetype6-dev）。"
 fi

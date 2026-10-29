@@ -33,7 +33,7 @@ main() {
 使用者代码
    │  import lvglcj.*
    ▼
-友好 API 层   util / app / display / input / widget / style / image   ← 本文档主要描述这一层
+友好 API 层   util / app / display / input / widget* / layout / anim / subject / style / image   ← 本文档主要描述这一层
    │  仓颉函数调用
    ▼
 FFI 层        src/ffi_*.cj（foreign 声明 + LV_* 常量）                ← 不导出给下游
@@ -42,7 +42,7 @@ FFI 层        src/ffi_*.cj（foreign 声明 + LV_* 常量）                ←
 C 垫片        native/shim/lvgl_shim.c（宏 / inline / offsetof → 真函数）      ← _cjbindwrapper 后缀
    │
    ▼
-LVGL 9.5 静态库  lib/{windows-x64,linux-x64,linux-arm64}/liblvgl.a
+LVGL 9.5 静态库  lib/{windows-x64,linux-x64,linux-arm64,linux-arm64-sdl}/liblvgl.a
 ```
 
 **为什么要 C 垫片**：LVGL 大量 API 是宏或 `static inline`（`LV_PCT()`、`style_set_*` 等），在 `.a` 里没有可链接符号，直接 `foreign` 声明必然链接失败。所以凡是宏/inline，都由垫片包一层真函数导出。
@@ -53,10 +53,11 @@ LVGL 9.5 静态库  lib/{windows-x64,linux-x64,linux-arm64}/liblvgl.a
 |---|---|---|---|
 | Windows 10/11 + MSYS2 UCRT64 | SDL2（原生窗口） | SDL 鼠标/键盘 | ✅ 实测 |
 | WSL2 Ubuntu 24.04 + WSLg | SDL2（WSLg 窗口） | SDL 鼠标/键盘 | ✅ 实测 |
-| Raspberry Pi Zero 2 W（aarch64） | DRM/KMS，fbdev 兜底 | evdev | ⏳ C 库已交叉编译，待真机联调 |
+| Raspberry Pi Zero 2 W（aarch64） | SDL2（labwc/Wayland 桌面，`lib/linux-arm64-sdl`） | SDL 鼠标/键盘 | ✅ 真机实测（中文/自绘/富文本均正常） |
+| Raspberry Pi Zero 2 W（aarch64，tty 独占） | DRM/KMS，fbdev 兜底 | evdev | ⏳ 库已交叉编译，DRM 直连与触摸校准待现场验证 |
 
 ## 版本要求
 
-- 仓颉 SDK **1.2.0**（`cjc` / `cjpm`）
-- LVGL **9.5.0**（仓库自带预编译静态库，三平台各一份）
+- 仓颉 SDK **1.2.0**（`cjc` / `cjpm`）；交叉到 Pi 用 linux-x64 SDK 即可，**不需要** aarch64 版 SDK
+- LVGL **9.5.0**（仓库自带预编译静态库，四个平台目录各一份）
 - 桌面模拟额外需要 SDL2 2.30+；中文显示需要 FreeType 2.13+

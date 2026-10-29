@@ -2,13 +2,13 @@
  * @file lv_conf.h
  * @brief lvglcj 模拟器（WSL, x86_64, SDL2 + WSLg）配置
  *
- * 与 lib/pi/lv_conf.h 的差异即 README「二、lv_conf.h 关键开关」表中的
- * WSL 列：32 位色深、SDL 后端、断言全开（开发期尽早发现问题）。
+ * 与 native/config/pi/lv_conf.h（DRM 独占）的差异即 README「二、lv_conf.h 关键开关」
+ * 表中的 WSL 列：32 位色深、SDL 后端、断言全开（开发期尽早发现问题）。
  */
 #ifndef LV_CONF_H
 #define LV_CONF_H
 
-/* WSL 模拟验证用 32 位色深（真机是 16，见 lib/pi/lv_conf.h） */
+/* WSL 模拟验证用 32 位色深（真机是 16，见 native/config/pi/lv_conf.h） */
 #define LV_COLOR_DEPTH 32
 
 /* ---- 显示 / 输入后端 ---- */

@@ -208,7 +208,13 @@ extend Widget {
             throw LvglException("Widget.grid 的列/行描述符不能为空")
         }
         let colBuf = toGridDsc(cols)
-        let rowBuf = toGridDsc(rows)
+        let rowBuf = try {
+            toGridDsc(rows)
+        } catch (e: Exception) {
+            // 行描述符分配失败时列描述符还没交给控件，必须就地 free，否则泄漏
+            unsafe { LibC.free(CPointer<Unit>(colBuf)) }
+            throw e
+        }
         unsafe { lv_obj_set_grid_dsc_array(raw(), colBuf, rowBuf) }
         // 两个数组必须**同时**存活，所以占两个槽位（slot 0 / slot 1）
         keepBuf(CPointer<Unit>(colBuf), slot: 0)

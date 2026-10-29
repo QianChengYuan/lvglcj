@@ -76,9 +76,13 @@ public class Display {
             throw LvglException("SDL 后端创建失败（${w}x${h}）")
         }
         let d = Display(disp)
-        // SDL 驱动自带的指针/键盘输入
+        // SDL 驱动自带的指针/键盘输入。两者失败都不致命（可能只需要鼠标），
+        // 但键盘为空时后续 setGroup 之类会静默失效，故这里显式吞掉并保留 mouse 判空。
         let mouse = unsafe { lv_sdl_mouse_create() }
-        unsafe { lv_sdl_keyboard_create() }
+        let keyboard = unsafe { lv_sdl_keyboard_create() }
+        if (keyboard.isNull()) {
+            println("[lvglcj] SDL 键盘输入创建失败：键盘事件将不可用")
+        }
         // LVGL 的 SDL 鼠标驱动只注册 indev，**不会**生成可见指针。
         // 桌面上还能靠系统光标定位，VNC / 无光标环境里表现就是"点了没反应"。
         if (!mouse.isNull()) {

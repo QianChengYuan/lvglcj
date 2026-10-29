@@ -167,8 +167,8 @@ source /etc/profile.d/cangjie.sh
 
 | 项 | 状态 |
 |---|---|
-| C 库（LVGL + 垫片）交叉编译 | ✅ 已实测，产物 `lib/linux-arm64/`，`readelf` 显示 `Machine: AArch64` |
-| 仓颉侧产出 aarch64 可执行文件 | ⏳ **需要 linux-aarch64 版仓颉 SDK**（见 4.5） |
+| C 库（LVGL + 垫片）交叉编译 | ✅ 已实测，产物 `lib/linux-arm64/`（DRM）与 `lib/linux-arm64-sdl/`（SDL 桌面），`readelf` 显示 `Machine: AArch64` |
+| 仓颉侧产出 aarch64 可执行文件 | ✅ 已实测：用 **linux-x64 版 SDK** 交叉即可，不需要 aarch64 版 SDK（见 4.5） |
 
 ### 4.2 交叉工具链 + arm64 头文件
 
@@ -216,7 +216,7 @@ aarch64-linux-gnu-nm -g --defined-only lib/linux-arm64/liblvgl.a | grep -c evdev
 | `LV_USE_LINUX_DRM` | 0 | **1** |
 | `LV_USE_EVDEV` | Linux 1 / Windows 0 | **1** |
 | `LV_USE_DRAW_SW_ASM` | 默认 | **NEON** |
-| `LV_MEM_SIZE` | 256 KB | **512 KB**（开了 FreeType，字形位图要吃 draw_buf） |
+| `LV_MEM_SIZE` | **1 MB**（开发机内存充足，避免密集字形把池吃光） | **512 KB**（开了 FreeType，字形位图要吃 draw_buf） |
 | `LV_DEF_REFR_PERIOD` | 16 ms | **33 ms**（≈30 fps） |
 | `LV_FONT_SOURCE_HAN_SANS_SC_16_CJK` | 1 | **1**（内置思源黑体 16px 子集，默认字体） |
 | `LV_USE_FREETYPE` | 1 | **1**（完整中文 + 任意字号，走 `DroidSansFallbackFull`） |
@@ -224,38 +224,34 @@ aarch64-linux-gnu-nm -g --defined-only lib/linux-arm64/liblvgl.a | grep -c evdev
 | `LV_USE_FS_STDIO` | **1** | **1**（文件访问走 `fopen`，驱动器字母 `'A'`；垫片负责拼 `A:<path>`） |
 | `LV_USE_IME_PINYIN` | **1** | **1**（`ImePinyin` 需它；LVGL 9.5 默认 0，改完要重编静态库） |
 
-### 4.5 仓颉侧交叉（需要 linux-aarch64 版 SDK）
+### 4.5 仓颉侧交叉（用 linux-x64 SDK 即可，不需要 aarch64 SDK）
 
-linux-x64 SDK 的 `runtime/lib` 里只有 `linux_x86_64_cjnative`，直接链 `lib/linux-arm64` 会得到：
+结论（2026-10 实测）：linux-x64 的 `cjc` 支持 `--target aarch64-unknown-linux-gnu`，只要
+`--sysroot` 指向 aarch64 的 glibc/crt 并加 `--static`（把仓颉运行时静态链进可执行文件），
+产物就能直接在 Pi 上跑。`examples/cjpm.toml` 已把这三项写进目标段：
 
+```toml
+[target.aarch64-unknown-linux-gnu]
+compile-option = "--sysroot /usr/aarch64-linux-gnu --static"
+link-option = "-L${LVGLCJ_AARCH64_SDL_LIB} -lSDL2 -lfreetype --allow-shlib-undefined"
 ```
-/usr/bin/ld: skipping incompatible .../lib/linux-arm64/liblvgl.a when searching for -llvgl
-/usr/bin/ld: cannot find -llvgl: No such file or directory
-```
-
-装上 **linux-aarch64 版 SDK** 后：
 
 ```bash
-export CANGJIE_HOME=/opt/cangjie_1.2.0_aarch64/cangjie
-export PATH="$CANGJIE_HOME/bin:$CANGJIE_HOME/tools/bin:$PATH"
-export LVGLCJ_LIB_DIR=lib/linux-arm64
+export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl              # 桌面 SDL 版；tty 独占才用 lib/linux-arm64
+export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib    # 从 Pi 拷回来的 aarch64 SDL2/FreeType
 
 cd examples
 cjpm build --target=aarch64-unknown-linux-gnu --cfg
-file target/release/bin/main        # ELF 64-bit LSB, ARM aarch64
+file target/aarch64-unknown-linux-gnu/release/bin/main   # ELF 64-bit LSB, ARM aarch64
 ```
 
-若链接报 `Scrt1.o` / `crti.o` 找不到，是 cjc 没找到交叉 sysroot（cjc **没有** gcc 的 `-B`）：
+三个常见坑：
 
-```bash
-cjc main.cj -o main --target=aarch64-unknown-linux-gnu \
-    --sysroot /usr/aarch64-linux-gnu \
-    -L /usr/aarch64-linux-gnu/lib/ \
-    -L /usr/lib/gcc-cross/aarch64-linux-gnu/13
-file main    # 确认输出 ELF aarch64
-```
-
-交叉支持矩阵随 SDK 版本变化，1.2.0 上若 `--target` 链接失败多半就是上面这条 sysroot 问题。
+- `LVGLCJ_LIB_DIR` 必须显式设置（cjpm 不支持 `${VAR:-默认值}`），且要选 aarch64 的那份；
+  用成 x86_64 的库会报 `skipping incompatible ... liblvgl.a when searching for -llvgl`；
+- 链接报 `Scrt1.o` / `crti.o` 找不到，就是 `--sysroot` 没指对（cjc **没有** gcc 的 `-B`）；
+- `--allow-shlib-undefined` 是给 `libSDL2.so` 用的：它自己依赖 libpulse/wayland/alsa/X11，
+  交叉环境里没有这些 aarch64 库，但运行期由 Pi 提供。
 
 退路有二：① 在 WSL 里用 `qemu-user-static` + aarch64 rootfs 走「本地编译」；② 直接在 Pi 上 `cjpm build` 原生编译（慢但零坑）。
 

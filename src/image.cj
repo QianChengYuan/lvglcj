@@ -172,7 +172,10 @@ public class Canvas <: Widget {
 
     ~init() {
         if (!drawBuf.isNull()) {
-            unsafe { lv_draw_buf_destroy(drawBuf) }
+            // 与 Style.~init 同理：`lv_draw_buf_destroy` 释放的是 LVGL 内存池里的块，
+            // 而终结器跑在独立的 GC 线程 —— 直接调会破坏池链表，必须回投 UI 线程。
+            App.releaseDrawBuf(drawBuf)
+            drawBuf = CPointer<lv_draw_buf_t>()
         }
     }
 }

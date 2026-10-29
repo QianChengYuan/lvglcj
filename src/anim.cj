@@ -92,6 +92,33 @@ private func freeAnimEntry(token: CPointer<UInt8>): Unit {
     }
 }
 
+/**
+ * 自由一条动画的 token（不看注册表）。
+ *
+ * 用在「条目还没来得及入表」的失败路径上：`freeAnimEntry` 走 `case None` 时
+ * 什么都不做（它靠"在表里"判断是否需要 free），照抄会漏掉 token。
+ */
+private func freeAnimToken(token: CPointer<UInt8>): Unit {
+    if (!token.isNull()) {
+        unsafe { LibC.free(token) }
+    }
+}
+
+/**
+ * 清空动画注册表（`App.shutdown()` 调用）：free 所有 token，不碰 LVGL 的动画链表。
+ * `lv_deinit` 之后这些 `lv_anim_t` 已经没了，不能再取消。
+ */
+internal func clearAnimEntries(): Unit {
+    let tokens = ArrayList<CPointer<UInt8>>(ANIM_ENTRIES.size)
+    for ((_, e) in ANIM_ENTRIES) {
+        tokens.add(e.token)
+    }
+    ANIM_ENTRIES.clear()
+    for (t in tokens) {
+        freeAnimToken(t)
+    }
+}
+
 /** LVGL 每帧调用：按 token 回查闭包 */
 @C
 func cjAnimExec(token: CPointer<UInt8>, value: Int32): Unit {
@@ -274,7 +301,8 @@ public class Anim {
         let a = try {
             buildAnim(token)
         } catch (e: LvglException) {
-            freeAnimEntry(token)
+            // 此刻条目还没入表，freeAnimEntry 会走 None 分支什么都不做 → 必须直接 free
+            freeAnimToken(token)
             throw e
         }
         ANIM_ENTRIES.add(token.toUIntNative(), AnimEntry(token, cb, completedCb))
@@ -304,7 +332,8 @@ public class Anim {
         let a = try {
             buildAnim(token)
         } catch (e: LvglException) {
-            freeAnimEntry(token)
+            // 同上：条目尚未入表，直接 free token
+            freeAnimToken(token)
             throw e
         }
         ANIM_ENTRIES.add(token.toUIntNative(), AnimEntry(token, cb, completedCb))

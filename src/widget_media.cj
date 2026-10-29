@@ -33,12 +33,21 @@ public class Image <: Widget {
 
     /**
      * 从图片文件创建图像控件。
-     * 前置：静态库编入了 `LV_USE_LODEPNG` + `LV_USE_FS_STDIO`（本仓库三平台产物都已打开）；
+     * 前置：静态库编入了 `LV_USE_LODEPNG` + `LV_USE_FS_STDIO`（本仓库四份产物都已打开）；
      * JPG/GIF/WebP 还需在 `lv_conf.h` 另开 `LV_USE_TJPGD` / `LV_USE_GIF` / `LV_USE_LIBWEBP` 并重编。
      */
     public static func fromFile(parent: Widget, path: String): Image {
+        // 先校验再创建控件：否则 setFile 抛异常时会在父对象上留下一个空白 Image
+        if (!exists(path)) {
+            throw LvglException("图片文件不存在：${path}")
+        }
         let img = Image(parent)
-        img.setFile(path)
+        try {
+            img.setFile(path)
+        } catch (e: Exception) {
+            img.finalize()
+            throw e
+        }
         img
     }
 

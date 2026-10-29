@@ -40,6 +40,8 @@ public class SpanPart {
      *           这种临时对象写法也安全 —— 样式会活到 SpanGroup 销毁。
      */
     public func style(st: Style): SpanPart {
+        // 与 Style.applyTo 同一条注册路径（也调 keepStyle），线程约束必须一致
+        App.assertUIThread("SpanPart.style")
         unsafe { lv_spangroup_set_span_style(owner, handle, st.raw()) }
         unsafe { lv_spangroup_refresh(owner) }
         group.keepStyle(st)

@@ -45,6 +45,7 @@ done
 
 detect_lib_dir() {
   case "$(uname -s)" in
+    # macOS 暂无预编译产物；保留分支只为让报错里能列出可选目录，请用 --lib-dir 指定
     Darwin) echo "lib/macos-arm64" ;;
     *)
       case "$(uname -m)" in

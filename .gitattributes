@@ -1,0 +1,7 @@
+# 行尾策略：仓库统一存 LF（Linux CI 的 cjfmt 比对依赖它，Windows 工作区由 core.autocrlf 转换）
+* text=auto eol=lf
+
+# 预编译静态库是二进制，不能做行尾转换或文本 diff
+*.a binary
+*.ttf binary
+*.png binary

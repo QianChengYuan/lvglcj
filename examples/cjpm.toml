@@ -3,7 +3,7 @@ cjc-version = "1.2.0"
 name = "lvglcj_examples"
 version = "0.1.0"
 output-type = "executable"
-description = "lvglcj 示例：hello / widgets / touch / image / canvas / perf"
+description = "lvglcj 示例：hello / widgets / touch / image / canvas / perf / rich / file / thread"
 compile-option = ""
 # liblvgl.a 的 SDL 后端依赖 SDL2、中文渲染依赖 FreeType，
 # 静态库本身无法自带依赖声明，故消费方必须在最终链接时补 -lSDL2 -lfreetype。

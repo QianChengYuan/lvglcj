@@ -94,8 +94,9 @@ App.reportLiveWidgets()             // 打印仍未释放的控件，返回数�
 | `Style` | 仓颉对象持有 C 堆 `lv_style_t` | 析构自动 `lv_style_delete`（受 GC 时机限制） |
 | `Font.load/systemCjk` | FreeType | `close()`，或随进程结束回收 |
 | `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free`；产出 `ImageDsc` 后由 dsc 持有引用，交给控件即整链保活 |
-| `ImageDsc` | 垫片分配 | 析构自动释放；`Image.setSource` / `AnimImage.frames` 会登记到控件保活表 |
-| `Canvas` | `lv_draw_buf_t` | 析构自动 `lv_draw_buf_destroy` |
+| `ImageDsc` | 垫片分配（`calloc`） | 析构自动 `free`（纯内存操作，GC 线程执行安全）；`Image.setSource` / `AnimImage.frames` 会登记到控件保活表 |
+| `Canvas` | `lv_draw_buf_t`（LVGL 内存池） | 析构自动 `lv_draw_buf_destroy`，但**经 `App` 回投到 UI 线程**执行（终结器在 GC 线程，不能直接动内存池） |
+| `Display` / `Input` | LVGL（C 侧） | 目前无释放入口，随进程结束回收；需要在中途换后端时请重启主循环 |
 
 #### 确定性释放：`Resource` / try-with-resources
 
@@ -123,7 +124,7 @@ LVGL 有一批 API **只存指针、不拷贝内容**，而绘制发生在后续
 | `Image.setSource` | 只存 `lv_image_dsc_t*` | `ImageDsc` 登记保活；dsc 又持有 `ImageBuffer` 引用（像素不拷贝）→ 整链保活 |
 | `AnimImage.frames` | 只存 dsc 指针数组 | 指针数组 + 每个 `ImageDsc` 都登记（同样顺带保住 `ImageBuffer`） |
 | `Calendar.highlight` | 只存日期数组 | 缓冲登记，直到下次 `highlight` 或控件删除 |
-| `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup；同一个 `Style` 挂多个控件时各自持有引用，删一个不影响其余 |
+| `Style.applyTo` / `SpanPart.style` | 只存 `lv_style_t*` | 登记到目标控件 / SpanGroup 的**样式表**（只追加）；同一个 `Style` 挂多个控件时各自持有引用，删一个不影响其余；**`keepOnly`（换图源/换帧）不会清掉样式** |
 | `Widget.grid` | 只存列/行描述符数组 | 两块数组各占一个保活槽（`slot: 0` / `slot: 1`）；换 `grid()` 时一起释放 |
 
 > 旧版本把这些数据存在包装对象的字段里，靠"变量活到控件销毁"这条约定维持 —— 一旦包装对象先被 GC
@@ -206,7 +207,7 @@ println("内存 ${m.usedSize}/${m.totalSize} 字节（${m.usedPct}%），碎片 
 | 方法 | 说明 |
 |---|---|
 | `App.setup(): Unit` | `lv_init()` + 把单调时钟挂到 `lv_tick_set_cb`。**必须最先调用**；不挂 tick，画面第一帧后就会卡死。幂等（`lv_init` 不可重入，重复调用直接返回） |
-| `App.shutdown(): Unit` | `lv_deinit()` 与资源回收。幂等；`deinit` 后此前持有的控件/样式句柄全部失效 |
+| `App.shutdown(): Unit` | `lv_deinit()` 与资源回收。幂等；会清空全部按地址索引的注册表（定时器/动画/观察者/保活/事件订阅），`deinit` 后此前持有的控件/样式/主题/定时器句柄**全部失效**，不得再调用其方法 |
 | `App.mainDisplay(): Display` | 默认 display 的包装 |
 | `App.post(task: () -> Unit): Unit` | **线程安全**投递 UI 任务；下一轮 `runOnce()` 在主线程执行，每轮最多 256 个 |
 | `App.onCallbackError(handler: (Exception) -> Unit): Unit` | 注册事件/定时器/post 任务的异常处理器 |
@@ -919,7 +920,7 @@ Image(disp.screen()).setSource(buf.toImageDsc())
 |---|---|
 | `Image(parent)` | 空图像控件 |
 | `img.setSource(dsc: ImageDsc)` | 用 `ImageBuffer.toImageDsc()` 的产物作源（不经过解码器，最省） |
-| `Image.fromFile(parent, path): Image` | 从 **PNG** 文件创建；需 `LV_USE_LODEPNG` + `LV_USE_FS_STDIO`（本仓库三平台产物已打开） |
+| `Image.fromFile(parent, path): Image` | 从 **PNG** 文件创建；需 `LV_USE_LODEPNG` + `LV_USE_FS_STDIO`（本仓库四份产物已打开） |
 | `img.setFile(path)` | 换成另一张图片文件；路径不存在抛 `LvglException` |
 
 ```cangjie
@@ -976,7 +977,7 @@ LVGL 9 的 subject 是「一份值 + 一串观察者」。本库目前只做 **i
 | 方法 | 说明 |
 |---|---|
 | `Subject.of(initial: Int32): Subject` | 新建主题（`lv_subject_init_int`） |
-| `get(): Int32` / `previous(): Int32` | 当前值 / 上一次通知前的值 |
+| `get(): Int32` / `previous(): Int32` | 当前值 / 上一次通知前的值。**读取类在主题已释放时返回 0**（写操作 `set/add/setRange/notify/subscribe/bind` 则抛 `LvglException`） |
 | `set(v: Int32)` | 设值。**值没变就不通知**（LVGL 走 `notify_if_changed`），先按范围钳住 |
 | `add(delta: Int32)` | 原地加减；中间结果用 `Int64` 算，越界按边界钳住，不抛溢出异常 |
 | `setRange(min, max)` | 设取值上下限，之后的 `set` 超界被钳住。**不回写当前值** |

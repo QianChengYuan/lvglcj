@@ -496,6 +496,27 @@ class WidgetTests {
     }
 
     /**
+     * 换源（`keepOnly`）**不能**把 `applyTo` 挂上去的样式一起放开。
+     *
+     * 回归点：样式与 `keep()` 曾共用一份列表，`Image.setSource` / `Image.setFile` /
+     * `AnimImage.frames` 调 `keepOnly` 时会把 Style 挤出保活表 → GC 后
+     * `obj->styles[]` 指向已释放的 `lv_style_t`，下一帧读悬垂内存。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testKeepOnlyKeepsStyles() {
+        let lb = Label(screen())
+        Style().radius(8).bgColor(0x11, 0x22, 0x33).applyTo(lb)
+        lb.keep(Style())
+        @Expect(lb.keptCount(), 2)
+        lb.keepOnly(ArrayList<Object>()) // 模拟换图源：清掉 keep 的对象
+        @Expect(lb.keptCount(), 1) // 样式仍在
+        App.refreshNow() // 真画一帧：样式若被提前释放，ASan 下这里就是 UAF
+        lb.close()
+        @Expect(true)
+    }
+
+    /**
      * keepBuf 按槽位并存：grid 的列/行描述符是两块**同时**存活的数组，
      * 早先「一个控件只留一块缓冲」的设计在这里会用掉前一块。
      */

@@ -378,7 +378,7 @@ func demoRich(): Unit {
 
 /**
  * 从图片文件加载（Image.fromFile）：需要静态库编入解码器 + FS 驱动
- * （本仓库三平台产物已打开 LV_USE_LODEPNG + LV_USE_FS_STDIO，支持 PNG）。
+ * （本仓库四份产物已打开 LV_USE_LODEPNG + LV_USE_FS_STDIO，支持 PNG）。
  */
 func demoFile(path: String): Unit {
     let disp = createDisplay()

@@ -109,17 +109,23 @@ private func removeEventHub(addr: UIntNative): Unit {
  * 不能锚在仓颉包装对象上：仓颉的 GC 由分配压力驱动（实测 UI 帧循环 3 秒内一次都不触发），
  * 包装对象何时被回收与 lv_obj 是否还在屏上毫无关系。
  *
- * 三种语义（对外见 `Widget.keep` / `keepOnly` / `keepBuf`）：
- * - `refs`   **追加式**：样式、图像描述符等「多个并存、各自独立」的对象；
+ * 四种语义（对外见 `Widget.keep` / `keepOnly` / `keepBuf`，样式由库内部登记）：
+ * - `refs`   **追加式**：`keep()` 登记的对象，多个并存、各自独立；
  * - `refs`   **替换式**（keepOnly）：帧序列这种「一次换一整套」的对象；
+ * - `styles` **只追加的样式表**：`Style.applyTo` / `SpanPart.style` 登记，
+ *   **不受 keepOnly 影响** —— 样式是逐个 `lv_obj_add_style` 挂上去的，
+ *   LVGL 的 `obj->styles[]` 里每个槽各自指向一个 `lv_style_t`，
+ *   「换图源」不该把之前挂的样式一起解引用掉；
  * - `cBufs`  **按槽位替换**：我们 malloc 出来交给 LVGL 的裸缓冲。同一槽位只留最新一个，
  *   登记新的一定 free 旧的；不同槽位并存（grid 的列描述符与行描述符就需要两个槽）。
  *
- * 三种都不锚在包装对象上，全部由 `LV_EVENT_DELETE` 统一回收。
+ * 四种都不锚在包装对象上，全部由 `LV_EVENT_DELETE` 统一回收。
  */
 private class KeepSlot {
-    /// 需要强引用的仓颉对象（Style / ImageDsc …），随 lv_obj 删除一起释放
+    /// 需要强引用的仓颉对象（ImageDsc / 自定义 keep 的对象），随 lv_obj 删除一起释放
     let refs: ArrayList<Object> = ArrayList<Object>()
+    /// 样式单独一张表：只追加，不会被 keepOnly 清掉（见类注释）
+    let styles: ArrayList<Object> = ArrayList<Object>()
     /// 需要 free 的 C 侧裸缓冲，下标即槽位号
     let cBufs: ArrayList<CPointer<Unit>> = ArrayList<CPointer<Unit>>()
 
@@ -149,6 +155,7 @@ private func freeKeepSlot(addr: UIntNative): Unit {
             }
             slot.cBufs.clear()
             slot.refs.clear()
+            slot.styles.clear()
             KEEPS.remove(addr)
         case None => ()
     }
@@ -352,10 +359,10 @@ internal func releaseAllKeeps(): Unit {
     LIVE_WIDGETS.clear()
 }
 
-/** 当前保活的仓颉对象个数（调试/测试用） */
+/** 当前保活的仓颉对象个数（含样式；调试/测试用） */
 internal func keptRefCount(handle: CPointer<lv_obj_t>): Int64 {
     match (KEEPS.get(handle.toUIntNative())) {
-        case Some(slot) => slot.refs.size
+        case Some(slot) => slot.refs.size + slot.styles.size
         case None => 0
     }
 }
@@ -397,6 +404,7 @@ public class EventSubscription {
     }
 
     public func cancel(): Unit {
+        App.assertUIThread("EventSubscription.cancel")
         if (!active) {
             return
         }
@@ -455,7 +463,18 @@ public open class Widget <: Resource {
     private var alive: Bool = true
     private var deleteRequested: Bool = false
 
+    /**
+     * @param handle lv_obj_t 句柄
+     * @param owned  true = 本对象拥有该 lv_obj（负责释放）；false = 借用视图
+     * @throws[LvglException] owned 且句柄为空时（`lv_*_create` 失败，通常是 LVGL 内存池耗尽）
+     */
     internal init(handle: CPointer<lv_obj_t>, owned!: Bool = true) {
+        // 所有控件的构造函数都是 `super(unsafe { lv_x_create(...) })`，
+        // 这里统一兜住创建失败：否则后续任何链式调用都会解引用空指针。
+        // 借用视图（Screen / Event.target()）允许为空语义，不在此校验。
+        if (owned && handle.isNull()) {
+            throw LvglException("控件创建失败：lv_obj_t 为空（通常是 LVGL 内存池耗尽）")
+        }
         this.handle = handle
         this.owned = owned
         if (owned) {
@@ -485,10 +504,13 @@ public open class Widget <: Resource {
     }
 
     /**
-     * 替换式保活：用 `objs` 顶掉此前登记的全部对象（帧序列换源、图像换源）。
+     * 替换式保活：用 `objs` 顶掉此前由 `keep()` 登记的**全部**对象（帧序列换源、图像换源）。
      *
      * 与 `keep()` 的差别是**先清空再登记**，适合「一次换一整套」的场景，
      * 避免旧帧一直留到控件删除。
+     *
+     * 注意：`Style.applyTo` / `SpanPart.style` 登记的样式在**独立的表**里，
+     * 不受本方法影响 —— 否则换图源会把已经挂在 lv_obj 上的样式一起放开。
      * @param objs 新的保活对象列表
      * @return this，便于链式调用
      */
@@ -533,10 +555,13 @@ public open class Widget <: Resource {
 
     /**
      * 追加保活一个样式；由 `Style.applyTo()` / `SpanPart.style()` 内部调用。
-     * 与 `keep()` 等价，保留此入口只是为了让样式路径读起来明确。
+     *
+     * 与 `keep()` 不同，样式登记在**独立**的 styles 表里：`keepOnly()`（换图源、换帧）
+     * 只清 refs，不会把已挂在 lv_obj 上的 lv_style_t 一起放开 —— 否则 LVGL 的
+     * `obj->styles[]` 会指向已释放的样式。
      */
     internal func keepStyle(st: Style): Unit {
-        keepRef(handle, st)
+        keepSlotOf(handle).styles.add(st)
     }
 
     /* ---- 几何 ---- */
@@ -826,6 +851,7 @@ public open class Widget <: Resource {
      * @throws[LvglException] 对 Screen / Event.target() 等借用视图调用时
      */
     public func finalize(): Unit {
+        App.assertUIThread("Widget.finalize")
         if (!owned) {
             throw LvglException("该 Widget 是借用视图，不能释放")
         }
@@ -850,6 +876,7 @@ public open class Widget <: Resource {
      * @throws[LvglException] 对 Screen / Event.target() 等借用视图调用时
      */
     public func delete(): Unit {
+        App.assertUIThread("Widget.delete")
         if (!owned) {
             throw LvglException("该 Widget 是借用视图，不能释放")
         }
@@ -879,6 +906,7 @@ public open class Widget <: Resource {
      * 需要「误用时立刻发现」请继续用 `finalize()`。
      */
     public func close(): Unit {
+        App.assertUIThread("Widget.close")
         if (!owned || !alive || deleteRequested) {
             return
         }

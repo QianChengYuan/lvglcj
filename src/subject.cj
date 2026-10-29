@@ -112,6 +112,26 @@ private func releaseObserver(token: CPointer<UInt8>, owner: UIntNative): Unit {
     }
 }
 
+/**
+ * 清空观察者注册表（`App.shutdown()` 调用）：free 所有 token，不碰 LVGL 的观察者节点
+ * （`lv_deinit` 会统一回收，此时再 `lv_observer_remove` 就是操作已释放内存）。
+ *
+ * 注意：`shutdown()` 之后所有 `Subject` / `Observer` 句柄都已失效，不得再调用其方法
+ * （`close()` 也会对已失效的 `lv_subject_t` 动手）。
+ */
+internal func clearSubjectObservers(): Unit {
+    let ts = ArrayList<CPointer<UInt8>>(OBSERVER_ENTRIES.size)
+    for ((_, e) in OBSERVER_ENTRIES) {
+        ts.add(e.token)
+    }
+    OBSERVER_ENTRIES.clear()
+    for (t in ts) {
+        if (!t.isNull()) {
+            unsafe { LibC.free(t) }
+        }
+    }
+}
+
 /** 主动取消：先 `lv_observer_remove`（让 LVGL 释放自己的观察者节点），再清条目 */
 private func cancelObserver(token: CPointer<UInt8>): Unit {
     if (token.isNull()) {
@@ -212,7 +232,13 @@ public class Subject {
         Subject(h)
     }
 
-    /** 当前值 */
+    /**
+     * 当前值。
+     *
+     * 读取类方法在主题已释放时**返回 0**（宽容），写操作（`set`/`add`/`setRange`/
+     * `notify`/`subscribe`/`bind`）则抛 `LvglException` —— 这条分界是全库一致的：
+     * 「读已失效对象」不该让清理路径（如统一收尾时读一次状态）崩掉。
+     */
     public func get(): Int32 {
         if (handle.isNull()) {
             0
@@ -221,7 +247,7 @@ public class Subject {
         }
     }
 
-    /** 上一次通知前的值 */
+    /** 上一次通知前的值；主题已释放时返回 0（同 `get()` 的读宽容约定） */
     public func previous(): Int32 {
         if (handle.isNull()) {
             0
@@ -272,6 +298,7 @@ public class Subject {
      * @param max 上限
      */
     public func setRange(min: Int32, max: Int32): Unit {
+        App.assertUIThread("Subject.setRange")
         if (handle.isNull()) {
             throw LvglException("主题已释放")
         }
@@ -281,11 +308,16 @@ public class Subject {
         }
     }
 
-    /** 值没变也强制通知一次（用于「刷新」语义） */
+    /**
+     * 值没变也强制通知一次（用于「刷新」语义）。
+     * @throws[LvglException] 主题已释放（`close()` 之后）时
+     */
     public func notify(): Unit {
-        if (!handle.isNull()) {
-            unsafe { lv_subject_notify(handle) }
+        App.assertUIThread("Subject.notify")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
         }
+        unsafe { lv_subject_notify(handle) }
     }
 
     /**

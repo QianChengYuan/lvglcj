@@ -153,7 +153,7 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | 事件 | `Widget.onEvent(mask, cb)` / `on(code, cb)` / `onBubbled(code, cb)` | 返回 `EventSubscription`，可 `cancel()`；控件删除时自动回收订阅；`on` 精确过滤单个事件码，`onBubbled` 收子孙冒泡（子控件需 `bubble()`）；`Button.onClick`、`Switch/Checkbox.onChanged`、`Slider.onValueChanged` 提供带类型的快捷订阅 |
 | 样式 | `Style()` | `bgColor/bgOpa/radius/border/pad/textFont/textColor/shadow` 等链式设置，`applyTo(obj, part, state)`；状态样式（PRESSED/CHECKED/DISABLED）与 part 选择器可用；`Widget.setStyle*` 系列是带 `part!/state!` 的一次性 setter |
 | **布局** | `Widget.flex(flow, gap)` / `flexAlign` / `flexGrow`、`Widget.grid(cols, rows)` / `gridAlign` / `place` | flex（含换行、轨道交叉对齐）与 grid（`Fr`/`Px`/`CONTENT` 轨道、跨行跨列）；布局是惰性的，测试读坐标前先 `updateLayout()` |
-| **保活契约** | `Widget.keep / keepOnly / keepBuf(slot)` | 给「LVGL 只存指针」的 API 用：`keep` 追加、`keepOnly` 替换、`keepBuf` 按槽位接管 malloc 缓冲（grid 用 slot 0/1）；样式/图像/缓冲已由库内部自动登记 |
+| **保活契约** | `Widget.keep / keepOnly / keepBuf(slot)` | 给「LVGL 只存指针」的 API 用：`keep` 追加、`keepOnly` 替换（只影响 `keep` 登记的对象）、`keepBuf` 按槽位接管 malloc 缓冲（grid 用 slot 0/1）；样式与图像描述符由库内部自动登记，其中**样式存在独立的只追加表里，`keepOnly`（换图源/换帧）不会把它清掉** |
 | **动画** | `Anim.create()` + `exec/from/to/duration/easing/repeat/playback/onCompleted` | 值动画（int32）；闭包经 token + 条目表桥接，动画结束自动回收；`Anim.liveCount()` 查泄漏，`Anim.cancelAll()` 一键停 |
 | **时间线** | `Timeline.create()` + `add(anim, at: ms)` / `start` / `setProgress` / `close` | 多段动画按起始时刻排布；`close()` 必须显式调用（LVGL 删除时间线不触发片段回调） |
 | **滚动** | `Widget.scrollBy/scrollTo/scrollToY/scrollToView/scrollX/scrollY` | 长度超出容器即可滚；`scrollBy` 的 dx/dy 是「内容位移」，与 `scrollY()` 反向；`anim: true` 走 LVGL 内部动画 |
@@ -207,12 +207,16 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 
 ### 方式 A：直接用仓库自带的预编译静态库（推荐）
 
-三份产物**互不兼容**（目标格式不同），按平台分目录；配置源与产物分离：`native/config/sdl/lv_conf.h`（内含 `_WIN32` 分支，Windows/Linux 共用）、`native/config/pi/lv_conf.h`（Pi 专用）：
+四份产物**互不兼容**（目标格式/后端不同），按平台分目录；配置源与产物分离，共三份配置：
+`native/config/sdl/lv_conf.h`（SDL 后端，内含 `_WIN32` 分支，Windows/Linux 共用）、
+`native/config/pi/lv_conf.h`（Pi：DRM + evdev + RGB565）、
+`native/config/pi-sdl/lv_conf.h`（Pi：SDL 桌面 + FreeType 中文）：
 
 ```
 native/config/
 ├── sdl/lv_conf.h                       # 配置源（SDL 后端，Windows + WSL 共用）
-└── pi/lv_conf.h                        # 配置源（Pi：DRM + evdev + RGB565）
+├── pi/lv_conf.h                        # 配置源（Pi：DRM + evdev + RGB565）
+└── pi-sdl/lv_conf.h                    # 配置源（Pi：SDL 桌面 + FreeType 中文）
 
 lib/                                    # 只有编译产物，不含配置
 ├── windows-x64/     liblvgl.a  liblvglcjshim.a   # PE x86_64，Windows（MSYS2 UCRT64）
@@ -353,7 +357,8 @@ lvglcj/
 │   ├── shim/lvgl_shim.c|.h    # 宏 / static inline → _cjbindwrapper；平台后端空实现
 │   └── config/
 │       ├── sdl/lv_conf.h      # SDL 后端配置源（Windows + WSL 共用，内含 _WIN32 分支）
-│       └── pi/lv_conf.h       # Pi 专用配置（DRM + evdev + RGB565 + NEON）
+│       ├── pi/lv_conf.h       # Pi 专用配置（DRM + evdev + RGB565 + NEON）
+│       └── pi-sdl/lv_conf.h   # Pi 桌面配置（SDL + FreeType 中文 + 512KB 池）
 ├── src/                       # 纯仓颉源码（cjpm src-dir，根包 lvglcj）
 │   ├── main.cj                # 根包占位文件（让 src 根目录被 cjpm 扫描）
 │   ├── ffi_structs.cj         # FFI：不透明句柄 + 按值结构体（@C struct）
@@ -397,7 +402,10 @@ lvglcj/
 │   ├── build.ps1 / build.sh   # 一键构建：自动选库目录 + 注入 LVGLCJ_LIB_DIR → cjpm
 │   ├── build-lvgl-sdl.ps1     # Windows：编 LVGL + 垫片 → lib/windows-x64
 │   ├── build-lvgl-sdl.sh      # Linux/WSL：→ lib/linux-x64
-│   ├── build-lvgl-pi.sh       # 交叉：→ lib/linux-arm64
+│   ├── build-lvgl-pi.sh       # 交叉：→ lib/linux-arm64（DRM + evdev）
+│   ├── build-lvgl-pi-sdl.sh   # 交叉：→ lib/linux-arm64-sdl（SDL 桌面 + FreeType）
+│   ├── build-lvgl-asan.sh     # ASan 插桩版 LVGL → .build/asan-lib
+│   ├── asan-test.sh           # 用插桩库跑单测（含 requires_display）
 │   ├── check.ps1              # cjfmt 格式检查 + cjlint 静态检查（本地与 CI 同一套）
 │   └── deploy-pi.sh           # scp 产物到 Pi + 远程运行
 ├── docs/                      # 使用文档（快速开始 / 编译指南 / API / FAQ）
@@ -425,7 +433,7 @@ lvglcj/
 | # | 步骤 | 做什么 | 状态 |
 |---|---|---|---|
 | 1 | 项目骨架 | `cjpm.toml`、`.gitignore`、`LICENSE`、`LICENSE.LVGL`、目录结构 | ✅ |
-| 2 | 获取 LVGL 9.5 | 三份静态库均已生成：`lib/windows-x64/`（Windows PE）、`lib/linux-x64/`（WSL ELF x86_64）、`lib/linux-arm64/`（aarch64 交叉，`Machine: AArch64` 已校验），产物随仓库发布 | ✅ |
+| 2 | 获取 LVGL 9.5 | 四份静态库均已生成：`lib/windows-x64/`（Windows PE）、`lib/linux-x64/`（WSL ELF x86_64）、`lib/linux-arm64/`（aarch64 DRM+evdev）、`lib/linux-arm64-sdl/`（aarch64 SDL 桌面），`Machine: AArch64` 已校验，产物随仓库发布 | ✅ |
 | 3 | C 垫片层 | `native/shim/lvgl_shim.c`：把宏/inline/sizeof/offsetof 包成 `_cjbindwrapper`；非 Linux 后端（DRM/fbdev/evdev）给空实现保证跨平台可链接 | ✅ |
 | 4 | 结构体偏移表 | `.cache/lvgl_offsets.c` 用交叉 gcc 对 9.5 头文件实测 offsetof，写入 `src/ffi_structs.cj`（`lv_area_t`/`lv_point_t`/`lv_image_header_t`/`lv_image_dsc_t`/`lv_indev_data_t`/`lv_mem_monitor_t`） | ✅ |
 | 5 | FFI 声明层 | `ffi_core.cj`（init/tick/timer）→ `ffi_display.cj` → `ffi_indev.cj` → `ffi_obj.cj` → `ffi_widgets.cj` → `ffi_draw.cj`，每个宏/inline 配 `_cjbindwrapper` | ✅ |
@@ -438,7 +446,7 @@ lvglcj/
 > 状态说明：步骤 1–8 已完成并双平台实测：
 > - **Windows + MSYS2 UCRT64**：`./scripts/build-lvgl-sdl.ps1` → `lib/windows-x64/`；`cjpm build` 与 `examples` 的 `cjpm build --cfg` 均 0 error；九个示例逐一弹窗。
 > - **WSL（Ubuntu-dev）+ WSLg**：`scripts/build-lvgl-sdl.sh` → `lib/linux-x64/`；`cjpm build` / `cjpm build --cfg` 编译通过。
-> - **单测**：`cjpm test` 与 display 用例全部通过（当时 49 个用例；后续补了保活/布局/事件粒度/动画/数据绑定回归，现为 99 个，最新数据见「单元测试」一节）。
+> - **单测**：`cjpm test` 与 display 用例全部通过（当时 49 个用例；后续补了保活/布局/事件粒度/动画/数据绑定/样式保活回归，现为 100 个，最新数据见「单元测试」一节）。
 >   > 本机 WSLg 的 Xwayland 报 `your 131072x1 screen size is bogus`，窗口投不到 Windows 桌面，因此 WSL 侧只做**无窗口验证**（控件真实创建、日历日期读写、帧动画帧数组与播放路径均已覆盖），视觉确认以 Windows 截图与 Pi 真机截图为准。
 > - **交叉编译**：`scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`，`readelf` 校验 `ELF64 / Machine: AArch64`，DRM/evdev 符号已编入。
 > - **仓颉侧 aarch64 产物不需要单独的 aarch64 SDK**：用本机 linux-x64 的 cjc，`cjpm.toml` 里配 `--target aarch64-unknown-linux-gnu --sysroot /usr/aarch64-linux-gnu --static`，静态链接后 scp 到 Pi 直接运行（约 7 MB，不依赖目标机上的仓颉运行时）。
@@ -507,28 +515,29 @@ cd examples && cjpm build --cfg
 2. **关掉 Windows PATH 注入**：`/etc/wsl.conf` 里写 `[interop] appendWindowsPath = false`，否则 `cjc` / `ninja` 会跑到 Windows 程序上；
 3. **中文显示**：不装 `fonts-noto-cjk` 时 `Font.trySystemCjk()` 落空，界面方框（内置子集只有 1338 字）。
 
-> **仓颉侧交叉需要 linux-aarch64 版 SDK**：linux-x64 SDK 的 `runtime/lib` 里只有 `linux_x86_64_cjnative`，
-> 直接链 `lib/linux-arm64` 会得到 `skipping incompatible .../liblvgl.a when searching for -llvgl`。
-> 装上 aarch64 SDK 后用 `cjpm build --target=aarch64-unknown-linux-gnu`；若链接报 `Scrt1.o`/`crti.o`
-> 找不到，补 `--sysroot /usr/aarch64-linux-gnu -L ...`（cjc 没有 gcc 的 `-B`）。
-> 完整命令、`@When` 平台分流与退路（qemu / Pi 原生编译）见 `docs/build-guide.md` 4.5。
+> **仓颉侧交叉不需要单独的 aarch64 SDK**：linux-x64 的 `cjc` 支持 `--target aarch64-unknown-linux-gnu`，
+> 只要 `--sysroot` 指向 aarch64 的 glibc/crt 并加 `--static`（把仓颉运行时静态链进可执行文件），
+> 产物就能直接在 Pi 上跑。`examples/cjpm.toml` 的 `[target.aarch64-unknown-linux-gnu]` 已经写好
+> 这三项参数，照下面的命令做即可。若链接报 `Scrt1.o`/`crti.o` 找不到，就是 sysroot 没指对
+> （cjc 没有 gcc 的 `-B`）。完整说明与退路（qemu / Pi 原生编译）见 `docs/build-guide.md` 4.5。
 
 ### 构建 + 部署到 Pi
 
-**前置**：`lib/linux-arm64/` 的 C 库已就绪（`scripts/build-lvgl-pi.sh`），并且装好 **linux-aarch64 版仓颉 SDK**。linux-x64 SDK 无法产出 aarch64 目标。
+**前置**：C 库已就绪（`scripts/build-lvgl-pi-sdl.sh` → `lib/linux-arm64-sdl/`，桌面里跑 SDL 版；
+tty 独占才用 `scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`）。**不需要 aarch64 版仓颉 SDK**，
+用 WSL 里的 linux-x64 SDK 交叉即可。
 
 ```bash
-# 用 aarch64 SDK（解压到 /opt 后）
-export CANGJIE_HOME=/opt/cangjie_1.2.0_aarch64/cangjie
-export PATH="$CANGJIE_HOME/bin:$CANGJIE_HOME/tools/bin:$PATH"
-export LVGLCJ_LIB_DIR=lib/linux-arm64
+# 用 linux-x64 SDK（WSL 里正常安装的那份）
+export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl
+export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib   # 从 Pi 拷回来的 aarch64 SDL2/FreeType
 
 cd examples
-cjpm build --target=aarch64-unknown-linux-gnu --cfg   # → target/release/bin/main（aarch64 ELF）
-file target/release/bin/main                          # 确认 ELF 64-bit LSB, ARM aarch64
+cjpm build --target aarch64-unknown-linux-gnu --cfg   # → target/aarch64-unknown-linux-gnu/release/bin/main
+file target/aarch64-unknown-linux-gnu/release/bin/main   # 确认 ELF 64-bit LSB, ARM aarch64
 
 # 部署（改 scripts/deploy-pi.sh 里的 IP）
-scp target/release/bin/main pi@raspberrypi.local:/home/pi/
+scp target/aarch64-unknown-linux-gnu/release/bin/main pi@raspberrypi.local:/home/pi/
 ssh pi@raspberrypi.local 'chmod +x ~/main && ~/main widgets'
 ```
 
@@ -584,8 +593,8 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows / WSL，2026-10）：**99 个用例，44 passed / 55 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **54 passed / 44 skipped / 0 failed**（其中 10 个是 display 用例，全部 passed）
+实测结果（Windows / WSL，2026-10）：**100 个用例，44 passed / 56 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **56 passed / 44 skipped / 0 failed**（需要窗口的用例全部 passed）
 （默认自动切到 `SDL_VIDEODRIVER=dummy`，在内存里渲染、**不弹窗口**；想看画面加 `LVGLCJ_TEST_REAL_WINDOW=1`）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
@@ -646,7 +655,8 @@ bash scripts/asan-test.sh                                # 普通用例 + requir
 - **静态**：`cjlint` 的 `-m` 必须指向 `CANGJIE_HOME` 根目录（不是 `modules/`），否则报 `Can not find modules`。报告输出到 `target/check/cjlint/cjlint-report.json`。
 - **判定**：格式不一致返回 1，`cjlint` 出现 ERROR/WARNING 返回 2（可叠加）；`SUGGESTIONS` 只汇总、不判失败。
 
-本库已确认的误报/既定风格固化在 `tools/cjlint/exclude_lists.json`，当前基线是 **0 条 SUGGESTIONS**。机制：
+本库已确认的误报/既定风格固化在 `tools/cjlint/exclude_lists.json`。注意**建议级（SUGGESTIONS）不判失败**，
+当前实测约 130 条（`G.VAR.02` 作用域提示、`G.NAM.03` FFI 沿用 C 名等），只有 ERROR / WARNING 才会让检查失败。机制：
 
 - 豁免按"规则 + 文件名 + 行号"精确匹配（`cjlint` 不支持只按文件或只按规则豁免），新增代码仍会正常告警。
 - 脚本运行时把当前 SDK 的 `tools/config/` 复制到 `target/check/cjlint/config/`，再用仓库里的名单覆盖 `exclude_lists.json`；规则文件始终跟随 SDK，仓库只维护豁免项。

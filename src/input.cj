@@ -9,11 +9,29 @@ import std.collection.*
 /** 设备发现的仓颉侧观察者（须声明在分发函数之前：仓颉顶层声明顺序敏感） */
 private let DISCOVERY_CALLBACKS: ArrayList<() -> Unit> = ArrayList<() -> Unit>() // cjlint-ignore !G.VAR.02 evdev 发现回调须全局存活
 
-/** evdev 设备发现回调：通知仓颉侧注册的观察者 */
+/** 清空设备发现回调（`App.shutdown()` 调用） */
+internal func clearDiscoveryCallbacks(): Unit {
+    DISCOVERY_CALLBACKS.clear()
+}
+
+/**
+ * evdev 设备发现回调：通知仓颉侧注册的观察者。
+ *
+ * 先取快照再遍历：回调里可能继续 `discover()`（往表里 add）或 `stopDiscover()`（清表），
+ * 直接遍历会被就地修改。回调异常也不能跨 C 边界传播。
+ */
 @C
 func cjEvdevDiscoveryCb(_: CPointer<lv_indev_t>, _: UInt32, _: CPointer<Unit>): Unit {
+    let snapshot = ArrayList<() -> Unit>(DISCOVERY_CALLBACKS.size)
     for (cb in DISCOVERY_CALLBACKS) {
-        cb()
+        snapshot.add(cb)
+    }
+    for (cb in snapshot) {
+        try {
+            cb()
+        } catch (e: Exception) {
+            App.reportCallbackError(e)
+        }
     }
 }
 
@@ -45,6 +63,9 @@ public class Input {
      * @throws[LvglException] 当前构建未启用 LV_USE_EVDEV，或发现服务已在运行/启动失败时
      */
     public static func discover(cb: () -> Unit): Unit {
+        // 回调表是普通 ArrayList，只在 UI 线程（lv_timer_handler 里）遍历；
+        // 从这里断言同线程，避免后台线程 add 与遍历并发。
+        App.assertUIThread("Input.discover")
         // 发现回调经 user_data 不需要携带状态，这里用静态分发占位：
         // LVGL 的 discovery 是轮询式，回调参数只有 indev/type，仓颉侧只需感知"有新设备"
         let started = unsafe {
@@ -56,9 +77,11 @@ public class Input {
         DISCOVERY_CALLBACKS.add(cb)
     }
 
-    /** 停止设备发现 */
+    /** 停止设备发现，并丢弃已登记的回调（再次 `discover()` 不会重复触发旧回调） */
     public static func stopDiscover(): Unit {
+        App.assertUIThread("Input.stopDiscover")
         unsafe { lvglcj_evdev_discovery_stop_cjbindwrapper() }
+        DISCOVERY_CALLBACKS.clear()
     }
 
     /* ==================== 实例配置 ==================== */

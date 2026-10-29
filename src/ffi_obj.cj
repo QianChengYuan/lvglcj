@@ -17,7 +17,7 @@ foreign func lv_obj_get_parent(obj: CPointer<lv_obj_t>): CPointer<lv_obj_t>
 
 foreign func lv_obj_get_display(obj: CPointer<lv_obj_t>): CPointer<lv_display_t>
 
-foreign func lv_obj_invalidate(obj: CPointer<lv_obj_t>): Int32
+foreign func lv_obj_invalidate(obj: CPointer<lv_obj_t>): Unit
 
 /* ---- 位置 / 尺寸 ---- */
 foreign func lv_obj_set_pos(obj: CPointer<lv_obj_t>, x: Int32, y: Int32): Unit

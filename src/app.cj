@@ -101,8 +101,11 @@ public class App {
 
     /**
      * lv_deinit 与资源回收。幂等：未经 setup() 或已 shutdown() 时直接返回。
+     *
+     * 会清空全部按地址索引的注册表（保活/事件订阅/定时器/动画/观察者/设备发现），
+     * 否则重新 setup() 后 LVGL 把新对象分配到同一地址，旧条目会把回调打到新对象上。
      * 注意 deinit 之后 LVGL 的全局状态（样式/字体/寄存器）都已释放，
-     * 再次 setup() 虽会重新 lv_init，但此前持有的控件/样式句柄全部失效。
+     * 再次 setup() 虽会重新 lv_init，但此前持有的控件/样式/主题/定时器句柄全部失效。
      */
     public static func shutdown(): Unit {
         if (!lvglInited) {
@@ -111,6 +114,14 @@ public class App {
         // 先还掉我们自己 malloc 的保活缓冲：lv_deinit 直接释放 LVGL 内存池，
         // 不会逐个对象派发 LV_EVENT_DELETE，等它跑完这些指针就悬垂了。
         releaseAllKeeps()
+        // 其余按地址/句柄索引的注册表也必须清空：lv_deinit 之后重新 setup() 时，
+        // LVGL 很可能把新对象分配到同样的地址上，旧条目会把回调打到新对象身上
+        // （典型症状：新定时器触发了上一轮的闭包，或旧 token 被重复 free）。
+        clearTimerEntries()
+        clearAnimEntries()
+        clearSubjectObservers()
+        clearDiscoveryCallbacks()
+        drainPostedTasks()
         unsafe { lv_deinit() }
         lvglInited = false
     }
@@ -234,6 +245,16 @@ public class App {
     internal static func releaseStyle(style: CPointer<lv_style_t>): Unit {
         runOnUIThread {
             unsafe { lv_style_delete_cjbindwrapper(style) }
+        }
+    }
+
+    /**
+     * 释放一块 `lv_draw_buf_t`（Canvas 的绘制缓冲），语义与 `releaseStyle` 相同：
+     * 终结器在 GC 线程执行，而 `lv_draw_buf_destroy` 动的是 LVGL 内存池，必须回投 UI 线程。
+     */
+    internal static func releaseDrawBuf(buf: CPointer<lv_draw_buf_t>): Unit {
+        runOnUIThread {
+            unsafe { lv_draw_buf_destroy(buf) }
         }
     }
 
@@ -428,6 +449,16 @@ internal class TimerEntry {
 private let TIMER_ENTRIES: ArrayList<TimerEntry> = ArrayList<TimerEntry>()
 private var timerDispatchDepth: Int64 = 0 // cjlint-ignore !G.VAR.02 定时器回调重入计数
 
+/**
+ * 清空定时器注册表（`App.shutdown()` 调用）。
+ * 只清仓颉侧的表，不碰 LVGL 的定时器链表 —— `lv_deinit` 会统一回收，
+ * 此时再 `lv_timer_delete` 就是操作已释放的内存。
+ */
+internal func clearTimerEntries(): Unit {
+    TIMER_ENTRIES.clear()
+    timerDispatchDepth = 0
+}
+
 private func removeTimerEntry(entry: TimerEntry): Unit {
     var i: Int64 = 0
     while (i < TIMER_ENTRIES.size) {
@@ -499,6 +530,7 @@ public class TimerHandle {
 
     /** 取消定时器；可重复调用，回调内部调用也安全 */
     public func cancel(): Unit {
+        App.assertUIThread("TimerHandle.cancel")
         if (!entry.active) {
             return
         }
@@ -510,12 +542,14 @@ public class TimerHandle {
     }
 
     public func pause(): Unit {
+        App.assertUIThread("TimerHandle.pause")
         if (entry.active) {
             unsafe { lv_timer_pause(entry.handle) }
         }
     }
 
     public func resume(): Unit {
+        App.assertUIThread("TimerHandle.resume")
         if (entry.active) {
             unsafe { lv_timer_resume(entry.handle) }
         }
@@ -523,12 +557,14 @@ public class TimerHandle {
 
     /** 让定时器在下一次 lv_timer_handler 中立即执行 */
     public func ready(): Unit {
+        App.assertUIThread("TimerHandle.ready")
         if (entry.active) {
             unsafe { lv_timer_ready(entry.handle) }
         }
     }
 
     public func setPeriod(period: UInt32): Unit {
+        App.assertUIThread("TimerHandle.setPeriod")
         if (entry.active) {
             unsafe { lv_timer_set_period(entry.handle, period) }
         }
