@@ -8,7 +8,7 @@
 | 目标平台 | Linux aarch64（ELF 64-bit LSB, AArch64） |
 | LVGL 版本 | **v9.5.0**（tag，源码来自 `gitcode.com/gh_mirrors/lvgl/lvgl`） |
 | 配置源 | `native/config/pi/lv_conf.h`（91 行） |
-| 配置快照 SHA-256 | `dfb1d25147c6ed8506684b5d9b74280f1a65830af274a4a7635b09079f3e9d66` |
+| 配置快照 SHA-256 | `9c96862130a5dea0947d6745346b9500938e3de0458223d429a0290ef81ae781`（本目录产物即按此配置编译） |
 | 构建脚本 | `scripts/build-lvgl-pi.sh`（工具链 `cmake/toolchain-aarch64.cmake`） |
 | 编译器 | `aarch64-linux-gnu-gcc` 13.3（Ubuntu 交叉包）+ cmake/ninja |
 | 产物 | `liblvgl.a`、`liblvglcjshim.a`（校验和见同目录 `SHA256SUMS`） |

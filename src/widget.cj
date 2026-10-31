@@ -737,8 +737,11 @@ public open class Widget <: Resource {
         sub.cancel()
     }
 
-    /** 主动向控件发送事件（测试、自定义事件或模拟输入时使用） */
+    /** 主动向控件发送事件（测试、自定义事件或模拟输入时使用）；控件已释放时静默返回 */
     public func sendEvent(code: UInt32): Unit {
+        if (!alive || deleteRequested) {
+            return
+        }
         let _ = unsafe { lv_obj_send_event(handle, code, CPointer<Unit>()) }
     }
 
@@ -840,6 +843,9 @@ public open class Widget <: Resource {
      * @param state 目标状态
      */
     public func setFont(f: Font, part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT): Unit {
+        // 字体指针存进 LVGL 的对象样式里，这里标记"已被引用"，
+        // 防止调用方随后 Font.close() 把仍在渲染的字形缓存删掉。
+        f.attach()
         unsafe { lv_obj_set_style_text_font(handle, f.raw(), part | state) }
     }
 
@@ -861,9 +867,14 @@ public open class Widget <: Resource {
         alive = false
         deleteRequested = true
         let addr = handle.toUIntNative()
-        // lv_obj_delete 内部会同步派发 LV_EVENT_DELETE：
-        // 订阅表与保活槽都由 cjEventDispatch 收尾，这里再做一次只是兜底（幂等）。
-        unsafe { lv_obj_delete(handle) }
+        // 先确认对象还在树上：LVGL 拥有子对象，父对象被删除时子对象一起消失，
+        // 但包装对象不会因此变成 isDeleted()==true。此时地址已归还内存池，
+        // 再调 lv_obj_delete 就是往池链表里写脏数据（父对象先删的常见用法）。
+        if (unsafe { lv_obj_is_valid(handle) }) {
+            // lv_obj_delete 内部会同步派发 LV_EVENT_DELETE：
+            // 订阅表与保活槽都由 cjEventDispatch 收尾，这里再做一次只是兜底（幂等）。
+            unsafe { lv_obj_delete(handle) }
+        }
         removeEventHub(addr)
         freeKeepSlot(addr)
         untrackWidget(addr)
@@ -913,7 +924,9 @@ public open class Widget <: Resource {
         alive = false
         deleteRequested = true
         let addr = handle.toUIntNative()
-        unsafe { lv_obj_delete(handle) }
+        if (unsafe { lv_obj_is_valid(handle) }) {
+            unsafe { lv_obj_delete(handle) }
+        }
         removeEventHub(addr)
         freeKeepSlot(addr)
         untrackWidget(addr)

@@ -150,6 +150,7 @@ public class Line <: Widget {
      * @throws[LvglException] 顶点少于 2 个，或顶点缓冲分配失败时
      */
     public func setPoints(points: Array<(Int32, Int32)>): Unit {
+        App.assertUIThread("Line.setPoints")
         if (points.size < 2) {
             throw LvglException("Line.setPoints 至少需要 2 个点")
         }

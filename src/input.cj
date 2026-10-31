@@ -9,9 +9,16 @@ import std.collection.*
 /** 设备发现的仓颉侧观察者（须声明在分发函数之前：仓颉顶层声明顺序敏感） */
 private let DISCOVERY_CALLBACKS: ArrayList<() -> Unit> = ArrayList<() -> Unit>() // cjlint-ignore !G.VAR.02 evdev 发现回调须全局存活
 
+/**
+ * 发现服务是否已在运行。
+ * LVGL 的 `lv_evdev_discovery_start` 不判重（直接覆盖全局句柄），所以幂等性只能由这里保证。
+ */
+private var discovering: Bool = false // cjlint-ignore !G.VAR.02 与 C 侧全局服务一一对应，须进程级
+
 /** 清空设备发现回调（`App.shutdown()` 调用） */
 internal func clearDiscoveryCallbacks(): Unit {
     DISCOVERY_CALLBACKS.clear()
+    discovering = false
 }
 
 /**
@@ -59,13 +66,22 @@ public class Input {
     /**
      * 扫描 /dev/input/ 自动创建 evdev 设备（支持热插拔）。
      * 发现新设备时回调 cb（cb 内可再调 Input.evdev 做精细配置）。
+     *
+     * **幂等**：发现服务已在运行时只登记回调，不会重复启动。
+     * LVGL 的 `lv_evdev_discovery_start` 没有「已在运行」判断，直接覆盖全局句柄
+     * （`lv_evdev.c` 里 `evdev_discovery = ed;`），重复调用会泄漏上一轮的
+     * inotify fd 与轮询 timer，回调也会叠加成两份。
      * @param cb 发现新设备时的回调（在主循环里执行）
-     * @throws[LvglException] 当前构建未启用 LV_USE_EVDEV，或发现服务已在运行/启动失败时
+     * @throws[LvglException] 当前构建未启用 LV_USE_EVDEV，或启动失败时
      */
     public static func discover(cb: () -> Unit): Unit {
         // 回调表是普通 ArrayList，只在 UI 线程（lv_timer_handler 里）遍历；
         // 从这里断言同线程，避免后台线程 add 与遍历并发。
         App.assertUIThread("Input.discover")
+        if (discovering) {
+            DISCOVERY_CALLBACKS.add(cb)
+            return
+        }
         // 发现回调经 user_data 不需要携带状态，这里用静态分发占位：
         // LVGL 的 discovery 是轮询式，回调参数只有 indev/type，仓颉侧只需感知"有新设备"
         let started = unsafe {
@@ -74,13 +90,15 @@ public class Input {
         if (started != LV_RESULT_OK) {
             throw LvglException("evdev 设备发现启动失败")
         }
+        discovering = true
         DISCOVERY_CALLBACKS.add(cb)
     }
 
-    /** 停止设备发现，并丢弃已登记的回调（再次 `discover()` 不会重复触发旧回调） */
+    /** 停止设备发现，并丢弃已登记的回调（再次 `discover()` 会重新启动服务） */
     public static func stopDiscover(): Unit {
         App.assertUIThread("Input.stopDiscover")
         unsafe { lvglcj_evdev_discovery_stop_cjbindwrapper() }
+        discovering = false
         DISCOVERY_CALLBACKS.clear()
     }
 

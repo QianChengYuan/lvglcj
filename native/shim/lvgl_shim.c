@@ -65,8 +65,13 @@ void lv_image_dsc_fill_cjbindwrapper(lv_image_dsc_t * dsc, uint32_t cf,
                                      uint32_t w, uint32_t h, uint32_t stride,
                                      const uint8_t * data, uint32_t data_size)
 {
-    if(dsc == NULL) return;
+    if(dsc == NULL || data == NULL) return;
     memset(dsc, 0, sizeof(*dsc));
+    /* w/h/stride 在这里被强转成 uint16_t 位域：超出即静默截断成错误的图像，
+     * 与其让 LVGL 读到一张尺寸诡异的图，不如留一个空描述符（magic=0）让上层报错。 */
+    if(w == 0 || h == 0 || w > 0xFFFF || h > 0xFFFF || stride > 0xFFFF) return;
+    /* data_size 与 stride × h 对不上说明调用方的缓冲算错了，放过去就是越界读 */
+    if((uint64_t)stride * (uint64_t)h > (uint64_t)data_size) return;
     /* header 为位域结构（magic:8/cf:8/flags:16 + w:16/h:16/stride:16/reserved_2:16），
      * 只能整体赋值，无法按字节拼装 —— 这是必须放在 C 侧填充的原因。 */
     dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -96,6 +101,9 @@ void lv_canvas_draw_rect_cjbindwrapper(lv_obj_t * canvas, int32_t x, int32_t y,
                                        int32_t w, int32_t h, int32_t radius,
                                        lv_color_t color, lv_opa_t opa)
 {
+    /* 画布缓冲没建好（分配失败/尚未 set_draw_buf）时，lv_canvas_init_layer 会解引用空指针 */
+    if(canvas == NULL || lv_canvas_get_draw_buf(canvas) == NULL) return;
+
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);
 
@@ -120,6 +128,9 @@ void lv_canvas_draw_text_cjbindwrapper(lv_obj_t * canvas, int32_t x, int32_t y,
 {
     const lv_font_t * f = (font != NULL) ? font : LV_FONT_DEFAULT;
     int32_t line_h = lv_font_get_line_height(f);
+
+    /* 同 draw_rect：画布未就绪时直接返回，别让 lv_canvas_init_layer 解引用空缓冲 */
+    if(canvas == NULL || lv_canvas_get_draw_buf(canvas) == NULL) return;
 
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);
@@ -435,6 +446,15 @@ int32_t lvglcj_image_set_file_cjbindwrapper(lv_obj_t * img, const char * path)
     buf[1] = ':';
     memcpy(buf + 2, path, len + 1);
 
+    /* lv_image_set_src() 返回 void：解码失败它只会把控件里旧的源 reset 掉，外部无从得知。
+     * 先拿解码器探一次头信息，探不到就报 INVALID，让仓颉侧能抛异常而不是静默显示空白。 */
+    lv_image_header_t header;
+    lv_result_t probe = lv_image_decoder_get_info(buf, &header);
+    if(probe != LV_RESULT_OK) {
+        free(buf);
+        return LV_RESULT_INVALID;
+    }
+
     lv_image_set_src(img, buf);
     free(buf);
     return LV_RESULT_OK;
@@ -464,6 +484,7 @@ void lvglcj_anim_free_cjbindwrapper(lv_anim_t * a)
 
 void lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing)
 {
+    if(a == NULL) return;
     lv_anim_path_cb_t cb;
     switch(easing) {
         case 0: cb = lv_anim_path_linear;       break;

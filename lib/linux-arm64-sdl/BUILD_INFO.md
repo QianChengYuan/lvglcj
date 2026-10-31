@@ -7,9 +7,9 @@ Pi Zero 2 W 上以 SDL 窗口显示（labwc / Wayland 桌面），不抢 DRM mas
 | 目标平台 | Linux aarch64（ELF 64-bit LSB, AArch64） |
 | LVGL 版本 | **v9.5.0**（tag，源码来自 `gitcode.com/gh_mirrors/lvgl/lvgl`） |
 | 配置源 | `native/config/pi-sdl/lv_conf.h` |
-| 配置快照 SHA-256 | `ff306ce18d81c4e6632e7d29100973a4d0411f88a11747b23c6401731d5d3cf5` |
+| 配置快照 SHA-256 | `2873a0b2e00b78b5288122a12a925206169b28ef417e744a856501042a2c624f`（本目录产物即按此配置编译） |
 | 构建脚本 | `scripts/build-lvgl-pi-sdl.sh`（工具链 `cmake/toolchain-aarch64.cmake`） |
-| 编译器 | `aarch64-linux-gnu-gcc` 13.x + cmake/ninja；SDL2/FreeType 头与库来自 Pi（`/root/aarch64-sdl`） |
+| 编译器 | `aarch64-linux-gnu-gcc` 13.x + cmake/ninja；SDL2/FreeType 头取自 Ubuntu noble arm64 包（架构无关头） |
 | 产物 | `liblvgl.a`、`liblvglcjshim.a`（校验和见同目录 `SHA256SUMS`） |
 
 关键开关（以 `lv_conf.h` 为准）：

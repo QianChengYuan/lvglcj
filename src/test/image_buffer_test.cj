@@ -67,4 +67,24 @@ class ImageBufferTests {
         let dsc = buf.toImageDsc()
         @Expect(true)
     }
+
+    /** 未知颜色格式：lv_color_format_get_bpp 返回 0 → malloc(0)，必须提前拒绝 */
+    @TestCase
+    func testRejectsUnknownColorFormat() {
+        @ExpectThrows[LvglException](ImageBuffer(2, 2, 0xFF))
+    }
+
+    /** w/h 超出 lv_image_header_t 的 16 位位域（>65535）会被静默截断 */
+    @TestCase
+    func testRejectsDimensionBeyond16BitHeader() {
+        @ExpectThrows[LvglException](ImageBuffer(70000, 1, LV_COLOR_FORMAT_RGB565))
+        @ExpectThrows[LvglException](ImageBuffer(1, 70000, LV_COLOR_FORMAT_RGB565))
+        @ExpectThrows[LvglException](ImageBuffer(0, 1, LV_COLOR_FORMAT_RGB565))
+    }
+
+    /** 尺寸合法但行宽超 65535：32768px × 4B（XRGB8888）= 131072 */
+    @TestCase
+    func testRejectsStrideBeyond16BitHeader() {
+        @ExpectThrows[LvglException](ImageBuffer(32768, 1, LV_COLOR_FORMAT_XRGB8888))
+    }
 }

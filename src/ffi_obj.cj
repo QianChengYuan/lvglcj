@@ -15,6 +15,14 @@ foreign func lv_obj_clean(obj: CPointer<lv_obj_t>): Unit
 
 foreign func lv_obj_get_parent(obj: CPointer<lv_obj_t>): CPointer<lv_obj_t>
 
+/**
+ * 对象是否仍在某个 display 的对象树上（9.5 提供，遍历屏幕树比较地址、不解引用入参）。
+ *
+ * 给「包装对象不知道自己已经随父对象被删」兜底：对 `lv_obj_delete` 一个已回收的
+ * 地址会直接踩内存池，删前先问一句能把它降级成「什么都不做」。
+ */
+foreign func lv_obj_is_valid(obj: CPointer<lv_obj_t>): Bool
+
 foreign func lv_obj_get_display(obj: CPointer<lv_obj_t>): CPointer<lv_display_t>
 
 foreign func lv_obj_invalidate(obj: CPointer<lv_obj_t>): Unit

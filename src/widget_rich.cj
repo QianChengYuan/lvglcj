@@ -226,14 +226,21 @@ public class AnimImage <: Widget {
     }
 
     /**
-     * 设置帧序列（至少 2 帧）。
+     * 设置帧序列（2..127 帧）。
      * @param list       每帧的图像描述符（ImageBuffer.toImageDsc() 的产物）
      * @param durationMs 一整轮播放的时长
-     * @throws[LvglException] 帧数少于 2，或帧指针数组分配失败时
+     * @throws[LvglException] 帧数不在 2..127，或帧指针数组分配失败时
      */
     public func frames(list: Array<ImageDsc>, durationMs!: UInt32 = 1000): Unit {
         if (list.size < 2) {
             throw LvglException("AnimImage.frames 至少需要 2 帧")
+        }
+        // LVGL 的 lv_animimg_t.pic_count 是 int8_t（lv_animimage_private.h:37），
+        // 帧数 >127 会被截成负数；而 index_change 只做上界 clamp
+        // （lv_animimage.c:243 `idx = pic_count - 1`），负的 pic_count 会算出负下标
+        // → animimg->dsc[-N]，随后作为图像源交给解码器。这里必须挡住。
+        if (list.size > 127) {
+            throw LvglException("AnimImage.frames 最多 127 帧（LVGL 的 pic_count 是 int8_t）：实际 ${list.size}")
         }
         let buf = unsafe { LibC.malloc<CPointer<Unit>>(count: Int64(list.size)) }
         if (buf.isNull()) {

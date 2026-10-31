@@ -306,9 +306,15 @@ public class Anim {
             throw e
         }
         ANIM_ENTRIES.add(token.toUIntNative(), AnimEntry(token, cb, completedCb))
-        unsafe { lv_anim_start(a) }
+        let started = unsafe { lv_anim_start(a) }
         // lv_anim_start 内部已 memcpy 一份，传入的这份可以立刻释放
         unsafe { lvglcj_anim_free_cjbindwrapper(a) }
+        if (started.isNull()) {
+            // 典型成因：LVGL 内存池耗尽。此时既不会跑 delete 回调、也不会跑 exec 回调，
+            // 条目与 token 从此无人回收 —— 必须在这里撤掉（freeAnimEntry 能处理"已入表"）。
+            freeAnimEntry(token)
+            throw LvglException("动画启动失败：lv_anim_start 返回空（通常是 LVGL 内存池耗尽）")
+        }
         AnimHandle(token)
     }
 

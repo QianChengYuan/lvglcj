@@ -15,14 +15,27 @@ public class ImageBuffer {
     private var cf: UInt32
 
     /**
-     * @param w   宽（像素）
-     * @param h   高（像素）
+     * @param w   宽（像素，1..65535）
+     * @param h   高（像素，1..65535）
      * @param cf  LV_COLOR_FORMAT_*（决定每像素字节数）
-     * @throws[LvglException] 像素缓冲 malloc 失败（尺寸过大或内存不足）时
+     * @throws[LvglException] 尺寸或颜色格式不合法、`stride` 超出 LVGL 的 16 位位域，
+     *         或像素缓冲 malloc 失败（尺寸过大/内存不足）时
      */
     public init(w: Int32, h: Int32, cf: UInt32) {
         let bpp = unsafe { UInt32(lv_color_format_get_bpp(cf)) }
+        if (bpp == 0) {
+            throw LvglException("不支持的颜色格式 cf=0x${cf}（lv_color_format_get_bpp 返回 0）")
+        }
         bytesPerPx = (bpp + 7) / 8
+        // lv_image_header_t 的 w/h/stride 是 16 位位域：超了会被静默截断成错误的图像
+        if (w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF) {
+            throw LvglException("像素缓冲尺寸超出范围：${w}x${h}（可用范围 1..65535）")
+        }
+        let stride = UInt32(w) * bytesPerPx
+        if (stride > 0xFFFF) {
+            throw LvglException(
+                "行宽 stride=${stride} 超过 65535（${w}px × ${bytesPerPx}B/px）：LVGL 的图像头用 16 位存 stride，请改用更窄的图或更低字节数的颜色格式")
+        }
         width = w
         height = h
         this.cf = cf
@@ -120,12 +133,38 @@ public class ImageDsc {
 }
 
 /**
+ * 绘制缓冲的所有权凭证：与 lv_obj 同生共死。
+ *
+ * `lv_canvas_set_draw_buf()` 把指针存进 lv_obj，但**不接管所有权**（canvas 的析构函数
+ * 只做 image cache drop）。而包装对象 Canvas 的存活期与 lv_obj 无关 —— GC 由分配压力
+ * 驱动，控件还在屏上、包装对象就被回收是常态。
+ *
+ * 所以缓冲必须锚在 lv_obj 上：本对象登记进保活表，随 `LV_EVENT_DELETE` 释放；
+ * 它被 GC 时把缓冲回投给 UI 线程销毁。反过来把释放放在 Canvas.~init 里就是
+ * 「控件还在用、缓冲先没了」的悬垂。
+ */
+private class DrawBufOwner {
+    private var buf: CPointer<lv_draw_buf_t>
+
+    init(buf: CPointer<lv_draw_buf_t>) {
+        this.buf = buf
+    }
+
+    ~init() {
+        if (!buf.isNull()) {
+            // 与 Style.~init 同理：`lv_draw_buf_destroy` 释放的是 LVGL 内存池里的块，
+            // 而终结器跑在独立的 GC 线程 —— 直接调会破坏池链表，必须回投 UI 线程。
+            App.releaseDrawBuf(buf)
+            buf = CPointer<lv_draw_buf_t>()
+        }
+    }
+}
+
+/**
  * 画布：自绘仪表 / 波形 / 图表。
  * 底层使用 lv_draw_buf_create 分配对齐缓冲，高层绘制经垫片（layer API 封装）。
  */
 public class Canvas <: Widget {
-    private var drawBuf: CPointer<lv_draw_buf_t>
-
     /**
      * @param parent 父控件（通常是 Screen）
      * @param w      宽（像素）
@@ -135,11 +174,15 @@ public class Canvas <: Widget {
      */
     public init(parent: Widget, w: Int32, h: Int32, cf!: UInt32 = LV_COLOR_FORMAT_RGB565) {
         super(unsafe { lv_canvas_create(parent.raw()) })
-        drawBuf = unsafe { lv_draw_buf_create(UInt32(w), UInt32(h), cf, 0) }
-        if (drawBuf.isNull()) {
+        let buf = unsafe { lv_draw_buf_create(UInt32(w), UInt32(h), cf, 0) }
+        if (buf.isNull()) {
+            // 控件已经建出来了，异常路径上必须自己删，否则它会一直挂在父对象上
+            unsafe { lv_obj_delete(handle) }
             throw LvglException("画布缓冲分配失败：${w}x${h}")
         }
-        unsafe { lv_canvas_set_draw_buf(handle, drawBuf) }
+        unsafe { lv_canvas_set_draw_buf(handle, buf) }
+        // 缓冲交给随 lv_obj 存活的持有者，而不是挂在包装对象字段上（见 DrawBufOwner）
+        keepRef(handle, DrawBufOwner(buf))
     }
 
     /** 填充背景 */
@@ -168,14 +211,5 @@ public class Canvas <: Widget {
     /** 设置单像素 */
     public func setPx(x: Int32, y: Int32, r: UInt8, g: UInt8, b: UInt8, opa!: UInt8 = 255): Unit {
         unsafe { lv_canvas_set_px(handle, x, y, Color.of(r, g, b), opa) }
-    }
-
-    ~init() {
-        if (!drawBuf.isNull()) {
-            // 与 Style.~init 同理：`lv_draw_buf_destroy` 释放的是 LVGL 内存池里的块，
-            // 而终结器跑在独立的 GC 线程 —— 直接调会破坏池链表，必须回投 UI 线程。
-            App.releaseDrawBuf(drawBuf)
-            drawBuf = CPointer<lv_draw_buf_t>()
-        }
     }
 }

@@ -466,6 +466,8 @@ App.runOnce()          // 让 layout timer 跑一轮
 
 多半是碰了不该碰的句柄。例如对**内置字体**调用 `Font.close()` 会卡死——它不是 FreeType 创建的，`lv_freetype_font_delete` 找不到对应的 face。本仓库已修复（`Font` 内部记录所有权，内置字体的 `close()` 变空操作）。
 
+同理，**已经挂到样式/控件/主题上的 FreeType 字体不能 `close()`**：`lv_style_t` / `lv_obj_t` / 主题对象都只存 `lv_font_t*`，释放后 LVGL 下一次布局或渲染就会读野指针（往往是绘制到一半崩在 `lv_font_get_glyph_*` 里）。`Font` 会记住自己被谁引用，这种调用现在直接抛 `LvglException`，需要提前释放就先删掉引用它的控件与样式。
+
 排查手段：`cjpm test --filter="ClassName.caseName"` 单独跑，配合 `--timeout-each=5s` 快速定位。
 
 ---

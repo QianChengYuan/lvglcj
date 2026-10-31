@@ -53,6 +53,8 @@ public class Style {
     }
 
     public func textFont(f: Font): Style {
+        // lv_style_t 只存 lv_font_t*，不持有 Font 对象：标记后禁止调用方 close()（见 Font.close）
+        f.attach()
         unsafe { lv_style_set_text_font(handle, f.raw()) }
         this
     }
@@ -144,10 +146,23 @@ public class Font {
     private var handle: CPointer<lv_font_t>
     /** true = 由 FreeType 创建（load/systemCjk），才允许 close()；内置字体为 false */
     private var owned: Bool
+    /**
+     * 是否已经被挂进样式/控件/主题。
+     *
+     * 这些 API 只把 `lv_font_t*` 存进 LVGL 自己的结构里，**不持有 Font 对象**；
+     * 一旦调用方 close()，LVGL 下一次布局/渲染读的就是已释放的字体（字形缓存 + FreeType 面）。
+     * 所以只要被引用过就禁止 close()：要释放请先删掉引用它的控件/样式。
+     */
+    private var attached: Bool = false
 
     private init(handle: CPointer<lv_font_t>, owned!: Bool = false) {
         this.handle = handle
         this.owned = owned
+    }
+
+    /** 标记「已被 LVGL 结构引用」；由 Style.textFont / Widget.setFont / Theme.default 调用 */
+    internal func attach(): Unit {
+        attached = true
     }
 
     /** Montserrat 指定字号（8..48，以 lv_conf.h 实际启用的为准，未启用回退默认字体） */
@@ -237,6 +252,8 @@ public class Font {
             throw LvglException(
                 "内置字体是 const lv_font_t（只读段），不能设置回退链；请用 Font.load/systemCjk 的字体当主字体")
         }
+        // 回退链同样只存指针：主字体活着期间 fb 不能 close()
+        fb.attach()
         unsafe { lvglcj_font_set_fallback_cjbindwrapper(handle, fb.handle) }
         this
     }
@@ -267,8 +284,17 @@ public class Font {
      * 释放 FreeType 字体。**内置字体（montserrat / defaultFont）调用它什么也不做**——
      * 它们不归 FreeType 管，强行删除会卡死（lv_freetype_font_delete 找不到对应的面）。
      * 可重复调用。
+     *
+     * **已经挂到样式/控件/主题上的字体不能 close()**：那些 API 只存了裸指针，
+     * 释放后 LVGL 仍会在布局与渲染时解引用它。要提前释放，请先让引用它的控件与
+     * 样式对象消失（控件删除时会一并放开样式）。
+     * @throws[LvglException] 字体已被 `Style.textFont` / `Widget.setFont` / `Theme.default` 引用时
      */
     public func close(): Unit {
+        if (attached) {
+            throw LvglException(
+                "该字体已被样式/控件/主题引用，不能 close()（先删除引用它的控件与样式；否则 LVGL 会读已释放的字体）")
+        }
         if (owned) {
             unsafe { lvglcj_freetype_font_delete_cjbindwrapper(handle) }
             owned = false
@@ -298,6 +324,8 @@ public class Theme {
         if (disp.isNull()) {
             throw LvglException("Theme.default 需要先创建 display")
         }
+        // 主题对象由 LVGL 持有字体指针，随 display 存活；标记后禁止 close()
+        font.attach()
         let theme = unsafe {
             lv_theme_default_init(disp, Color.of(primary[0], primary[1], primary[2]),
                 Color.of(secondary[0], secondary[1], secondary[2]), dark, font.raw())

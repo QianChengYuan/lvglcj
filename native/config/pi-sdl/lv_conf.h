@@ -27,7 +27,10 @@
 
 /* ---- 渲染 ---- */
 #define LV_DEF_REFR_PERIOD 33     /* Zero 2 W 用 30 fps 档，留出 CPU 余量 */
-#define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+#define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+/* 0：lv_point_precise_t 是两个 int32，与仓颉侧按 lv_point_t 声明的
+   lv_line_set_points 数组布局一致（float 版元素 8 字节，垫片会读错）。 */
+#define LV_USE_FLOAT 0
 #define LV_USE_THORVG_INTERNAL 0
 #define LV_USE_GSTREAMER 0
 
@@ -41,6 +44,9 @@
    2026-10-26 在 Pi 上就踩到了。这里关掉 NULL 断言：lv_draw_buf_destroy(NULL) 会走
    函数内的 `if(draw_buf == NULL) return;`，最坏只丢一帧字形，不会锁死界面。 */
 #define LV_USE_ASSERT_NULL 0
+/* MALLOC 断言默认 1，本文件没有 LV_ASSERT_HANDLER（默认 `while(1);`）：
+   池子吃满那次分配就会让主循环永久自旋。关掉后变成返回 NULL + 错误上抛。 */
+#define LV_USE_ASSERT_MALLOC 0
 
 /* ---- 内存池：SDL 后端 buffer 走系统堆，这里只放对象/样式/字形缓存 ----
    128KB 时零头就没了：FreeType 每个字形位图是一个 lv_draw_buf（20px 汉字约 0.5KB），

@@ -25,7 +25,10 @@
 
 /* ---- 渲染 ---- */
 #define LV_DEF_REFR_PERIOD 33       /* ≈30 fps，按面板刷新率与算力定 */
-#define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NEON   /* Cortex-A53 NEON 加速软渲染 */
+#define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_NEON   /* Cortex-A53 NEON 加速软渲染 */
+/* 0：lv_point_precise_t 是两个 int32，与仓颉侧按 lv_point_t 声明的
+   lv_line_set_points 数组布局一致（float 版元素 8 字节，垫片会读错）。 */
+#define LV_USE_FLOAT 0
 #define LV_USE_THORVG_INTERNAL 0    /* Zero 2 W 上矢量图形性价比低 */
 #define LV_USE_GSTREAMER 0          /* v1.1 再评估 */
 
@@ -37,6 +40,11 @@
    FreeType 字形缓存吃满内存时 LVGL 会把 NULL 的 draw_buf 传进 destroy，
    一断言就自旋（2026-10-26 在 Pi 上踩过）。关掉后最坏只丢一帧字形。 */
 #define LV_USE_ASSERT_NULL 0
+/* MALLOC 断言默认是 1，且本文件没有 LV_ASSERT_HANDLER（默认 `while(1);`）。
+   内存池吃满的那次分配就会让主循环永久自旋 —— 比上面 NULL 断言更常见：
+   FreeType 字形缓存、动画、图像解码都会从同一个池子拿内存。关掉后分配失败
+   变成返回 NULL，由各调用点把错误抛给仓颉侧（见 Font.load / ImageBuffer.init）。 */
+#define LV_USE_ASSERT_MALLOC 0
 
 /* ---- 内存池：开了 FreeType 就不能再是 128KB ----
    FreeType 每个字形位图是一个 lv_draw_buf（20px 汉字约 0.5KB），128 个缓存项

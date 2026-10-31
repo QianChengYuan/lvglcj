@@ -388,6 +388,27 @@ class WidgetTests {
     }
 
     /**
+     * AnimImage 帧数上限：LVGL 的 pic_count 是 int8_t，128 帧会被截成 -128，
+     * 内部索引只做上界 clamp → 负下标取图源。必须在仓颉侧挡住。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testAnimImageRejectsMoreThan127Frames() {
+        let buf = ImageBuffer(2, 2, LV_COLOR_FORMAT_RGB565)
+        buf.writePixels(Array<UInt8>(8, repeat: 0x11))
+        let dsc = buf.toImageDsc()
+        let many = ArrayList<ImageDsc>()
+        var i: Int64 = 0
+        while (i < 128) {
+            many.add(dsc)
+            i += 1
+        }
+        let anim = AnimImage(screen())
+        @ExpectThrows[LvglException](anim.frames(many.toArray()))
+        anim.finalize()
+    }
+
+    /**
      * Line：lv_line_set_points 只存指针，顶点数组必须由控件保活。
      * 这里连续替换两次顶点并泵几帧（真绘制发生在 timer handler 里），
      * 修前的实现会在第一帧绘制时读到已 free 的内存（UAF）。

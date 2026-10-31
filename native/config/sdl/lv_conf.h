@@ -33,7 +33,11 @@
 
 /* ---- 渲染 ---- */
 #define LV_DEF_REFR_PERIOD 16       /* 60 fps 档 */
-#define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+#define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
+/* 0：lv_point_precise_t 退化成两个 int32，与仓颉侧按 lv_point_t 声明的
+   lv_line_set_points 数组布局一致。改成 1 后坐标变 float（元素 8 字节），
+   垫片会把 float 位模式当整数读，线会画到屏幕外。 */
+#define LV_USE_FLOAT 0
 #define LV_USE_THORVG_INTERNAL 0
 #define LV_USE_GSTREAMER 0
 

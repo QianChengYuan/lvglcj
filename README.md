@@ -710,7 +710,8 @@ lvglcj = { path = ".." }
 2. **样式与图像句柄由库保活**：`Style().radius(8).applyTo(btn)`、`img.setSource(buf.toImageDsc())`
    都可以传临时对象 —— 控件会把 `Style` / `ImageDsc`（进而 `ImageBuffer`）挂在自己身上。
 3. **`ImageDsc` 没有 `bind()`**：像素内容变了要自己 `obj.invalidate()` 触发重绘；
-   `img.setFile()` 解码失败只打 WARN、控件显示空白（`lv_image_set_src` 无返回码）。
+   `img.setFile()` 现在**解码失败会抛 `LvglException`**（垫片先用 `lv_image_decoder_get_info` 探一次头信息 ——
+   `lv_image_set_src` 本身无返回码，以前失败只会静默显示空白）。
 
 控件的完整清单（含 `Slider/Arc/Bar/Switch/Checkbox/Dropdown/Roller/TextArea/Keyboard/List/Table/TabView/Menu/MsgBox/Chart/Canvas/Win/SpanGroup/Calendar/AnimImage/ImePinyin`）与逐个方法见
 `docs/api-reference.md` 第 5 节。

@@ -5,7 +5,7 @@
 | 目标平台 | Windows x64（PE，`x86_64-w64-mingw32`） |
 | LVGL 版本 | **v9.5.0**（tag，源码来自 `gitcode.com/gh_mirrors/lvgl/lvgl`） |
 | 配置源 | `native/config/sdl/lv_conf.h` |
-| 配置快照 SHA-256 | `62a21647b4800e0f101a93ef1316a7b93323b3e7f9d781992f4c4b4a06e2c4e1`（产物编译时为 `203a4e09…`；之后仅修正了文件头注释里的路径，未重编，二进制不变） |
+| 配置快照 SHA-256 | `7c66d8092fe8a987dbeff3fd6ede8e2a18790abb962c3aa32dc65156f8b9307b`（2026-10-31 重编：修正无效宏 `LV_DRAW_SW_ASM` → `LV_USE_DRAW_SW_ASM`、显式 `LV_USE_FLOAT 0`；LVGL 本体字节未变，垫片因新增空指针/边界校验而变） |
 | 构建脚本 | `scripts/build-lvgl-sdl.ps1` |
 | 编译器 | MSYS2 **UCRT64** gcc（mingw32 / clang64 与 cjc 目标不匹配，不可用） |
 | 产物 | `liblvgl.a`、`liblvglcjshim.a`（校验和见同目录 `SHA256SUMS`） |

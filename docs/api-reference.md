@@ -95,7 +95,7 @@ App.reportLiveWidgets()             // 打印仍未释放的控件，返回数�
 | `Font.load/systemCjk` | FreeType | `close()`，或随进程结束回收 |
 | `ImageBuffer` | 系统堆（`LibC.malloc`） | 析构自动 `free`；产出 `ImageDsc` 后由 dsc 持有引用，交给控件即整链保活 |
 | `ImageDsc` | 垫片分配（`calloc`） | 析构自动 `free`（纯内存操作，GC 线程执行安全）；`Image.setSource` / `AnimImage.frames` 会登记到控件保活表 |
-| `Canvas` | `lv_draw_buf_t`（LVGL 内存池） | 析构自动 `lv_draw_buf_destroy`，但**经 `App` 回投到 UI 线程**执行（终结器在 GC 线程，不能直接动内存池） |
+| `Canvas` | `lv_draw_buf_t`（LVGL 内存池） | 缓冲的存活期绑定在 **lv_obj** 上（内部持有者登记进保活表，随 `LV_EVENT_DELETE` 释放）；GC 回收持有者时经 `App` 回投到 UI 线程 `lv_draw_buf_destroy`（终结器在 GC 线程，不能直接动内存池） |
 | `Display` / `Input` | LVGL（C 侧） | 目前无释放入口，随进程结束回收；需要在中途换后端时请重启主循环 |
 
 #### 确定性释放：`Resource` / try-with-resources
@@ -366,7 +366,7 @@ scr.setFont(font)                        // 整个界面默认字体
 | 方法 | 说明 |
 |---|---|
 | `Input.evdev(indevType: UInt32, dev: String): Input` | 按设备节点创建，`LV_INDEV_TYPE_POINTER`（触摸/鼠标）或 `KEYPAD`（键盘） |
-| `Input.discover(cb: () -> Unit): Unit` | 扫描 `/dev/input/` 并支持热插拔，发现新设备时回调 |
+| `Input.discover(cb: () -> Unit): Unit` | 扫描 `/dev/input/` 并支持热插拔，发现新设备时回调；**幂等**——服务已在运行时只登记回调（LVGL 的 `lv_evdev_discovery_start` 不判重，重复调用会漏 inotify fd 并把回调叠成两份） |
 | `Input.stopDiscover(): Unit` | 停止设备发现 |
 | `Input.activePoint(): Option<(Int32, Int32)>` | 最近一次处理的指针坐标；无指针设备时返回 `None` |
 
@@ -751,10 +751,12 @@ cal.onPressed { (y, m, d) => println("选中 ${y}-${m}-${d}") }
 
 ```cangjie
 let anim = AnimImage(scr)
-anim.frames(dscs.toArray(), durationMs: 800)   // dscs: Array<ImageDsc>，至少 2 帧
+anim.frames(dscs.toArray(), durationMs: 800)   // dscs: Array<ImageDsc>，2..127 帧
 anim.repeatCount(LV_ANIM_REPEAT_INFINITE)
 anim.start()
 ```
+
+> 帧数上限 127 不是随手定的：LVGL 的 `lv_animimg_t.pic_count` 是 `int8_t`（`lv_animimage_private.h`），超过 127 会被截成负数，而内部索引只做上界 clamp，结果是拿负下标去 `dsc[]` 里取图源。`frames()` 在 2..127 之外直接抛 `LvglException`。
 
 > 同样只存指针：`frames()` 传入的 `Array<ImageDsc>` 及其背后的 `ImageBuffer` 会登记进该控件的保活表（活到下次 `frames()` 或控件删除），所以传临时对象也安全；但已经交给它的 `ImageDsc`/`ImageBuffer` 不要在别处提前 `finalize()`。
 
@@ -838,7 +840,7 @@ Style().textColor(0xFF, 0xFF, 0xFF).applyTo(btn, state: LV_STATE_CHECKED | LV_ST
 | `setFallback(fb: Font): Font` | 设置缺字回退字体（LVGL 9.5 `lv_font_t::fallback`），返回 `this`；**仅 FreeType 字体可用**，内置字体调用抛 `LvglException` |
 | `clearFallback(): Font` | 清空回退链（同样仅 FreeType 字体） |
 | `fallback(): Option<Font>` | 读取当前回退字体 |
-| `close()` | 释放 FreeType 字体；**内置字体（montserrat/defaultFont）调用是空操作**，可重复调用 |
+| `close()` | 释放 FreeType 字体；**内置字体（montserrat/defaultFont）调用是空操作**，可重复调用。字体一旦被 `Style.textFont` / `Widget.setFont` / `Theme.default` 引用就**不能**再 `close()`（那些 API 只存裸指针），此时抛 `LvglException`；先删掉引用它的控件与样式 |
 
 `systemCjk` / `trySystemCjk` 的候选路径顺序：
 
@@ -921,7 +923,7 @@ Image(disp.screen()).setSource(buf.toImageDsc())
 | `Image(parent)` | 空图像控件 |
 | `img.setSource(dsc: ImageDsc)` | 用 `ImageBuffer.toImageDsc()` 的产物作源（不经过解码器，最省） |
 | `Image.fromFile(parent, path): Image` | 从 **PNG** 文件创建；需 `LV_USE_LODEPNG` + `LV_USE_FS_STDIO`（本仓库四份产物已打开） |
-| `img.setFile(path)` | 换成另一张图片文件；路径不存在抛 `LvglException` |
+| `img.setFile(path)` | 换成另一张图片文件；路径不存在或**解码失败**都抛 `LvglException`（垫片先用 `lv_image_decoder_get_info` 探一次头信息，不再静默显示空白） |
 
 ```cangjie
 let img = Image.fromFile(scr, "/home/pi/logo.png")
@@ -956,6 +958,10 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 ```
 
 > `Canvas` 的绘制是**直接写缓冲**，不会自动重绘整屏；内容变化后调 `invalidate()`。
+>
+> 绘制缓冲跟着**控件**走，不跟着包装对象走：`Canvas` 包装对象被 GC 回收时画布照常工作，
+> 只有 `cv.finalize()` / 父对象删除才释放缓冲。若缓冲本身分配失败，`Canvas(...)` 会抛
+> `LvglException` 且不留下半成品控件。
 
 ---
 
