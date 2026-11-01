@@ -443,7 +443,7 @@ lvglcj/
 | 4 | 结构体偏移表 | `.cache/lvgl_offsets.c` 用交叉 gcc 对 9.5 头文件实测 offsetof，写入 `src/ffi_structs.cj`（`lv_area_t`/`lv_point_t`/`lv_image_header_t`/`lv_image_dsc_t`/`lv_indev_data_t`/`lv_mem_monitor_t`） | ✅ |
 | 5 | FFI 声明层 | `ffi_core.cj`（init/tick/timer）→ `ffi_display.cj` → `ffi_indev.cj` → `ffi_obj.cj` → `ffi_widgets.cj` → `ffi_draw.cj`，每个宏/inline 配 `_cjbindwrapper` | ✅ |
 | 6 | 友好 API 层 | `util.cj` → `app.cj`（主循环/tick）→ `display.cj` → `input.cj` → `widget.cj` → `style.cj` → `image.cj`；`ImageBuffer.toImageDsc()` 是喂像素给 LVGL 的核心 | ✅ |
-| 7 | 示例项目 | `examples/`：①hello ②widgets ③touch ④image（RGB565 直出）⑤canvas（自绘仪表）⑥perf（FPS/内存）⑦rich（富文本 / 日历 / 帧动画）⑧file（`Image.fromFile` 加载 PNG）⑨thread（`App.post` 跨线程刷 UI + 回调异常兜底） | ✅ |
+| 7 | 示例项目 | `examples/`：⓪`all` 全功能演示（8 个标签页：控件/布局/样式/绑定/焦点组/动画/绘图/图表/富文本+浮层）①hello ②widgets ③touch ④image（RGB565 直出）⑤canvas（自绘仪表）⑥perf（FPS/内存）⑦rich（富文本 / 日历 / 帧动画）⑧file（`Image.fromFile` 加载 PNG）⑨thread（`App.post` 跨线程刷 UI + 回调异常兜底） | ✅ |
 | 8 | 本机 SDL 验证 | Windows：九示例全部真实弹窗（LVGL Simulator + SDL 鼠标键盘）；WSL（Ubuntu 24.04 + WSLg）：编译通过，窗口用例受 WSLg 限制跳到真机/Windows 验证 | ✅ Windows + WSL |
 | 9 | **真机联调（Pi Zero 2 W）** | SDL 后端在 Pi 桌面（labwc/Wayland）出图 + grim 截图确认中文/数字/自绘均正常；`Display.drm()` 直连未验证（桌面占着 DRM master，需切到 console 跑）；evdev 触摸校准待现场调 | 🟡 已跑通图形，DRM/触摸待验 |
 | 10 | 文档与发布 | README 收尾、API 参考补全、Gitcode 发布 | 🟡 文档已成体系，发布待做 |
@@ -556,6 +556,7 @@ ssh pi@raspberrypi.local 'chmod +x ~/main && ~/main widgets'
 ls -l /dev/dri/card0 /dev/input/event*
 sudo usermod -aG video,input $USER    # 避免每次 sudo
 
+./main all        # 全功能演示（8 个标签页，覆盖全部公开 API）
 ./main hello      # 最小窗口
 ./main widgets    # 控件总览
 ./main touch      # 触摸/指针 + 校准信息
@@ -570,6 +571,7 @@ sudo usermod -aG video,input $USER    # 避免每次 sudo
 
 ```bash
 cd examples && cjpm build --cfg                    # --cfg 见 cjpm.toml 的 [profile.customized-option]
+./target/release/bin/main all                      # 全功能演示：8 个标签页逐个点
 ./target/release/bin/main widgets                  # Windows 弹窗 / WSLg 弹窗
 ```
 

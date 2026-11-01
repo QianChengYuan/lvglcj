@@ -453,6 +453,7 @@ func demoThread(): Unit {
 
 func usage(): Unit {
     println("用法：main <demo>")
+    println("  all                 # 全功能演示（8 个标签页，推荐先看这个）")
     println("  hello | widgets | touch | image | canvas | perf | rich | thread")
     println("  file <png路径>      # 从图片文件加载（Image.fromFile）")
 }
@@ -465,6 +466,7 @@ main(args: Array<String>): Unit {
     App.setup()
     println("[lvglcj] LVGL ${version()}，演示：${args[0]}")
     match (args[0]) {
+        case "all" => demoShowcase()
         case "hello" => demoHello()
         case "widgets" => demoWidgets()
         case "touch" => demoTouch()

@@ -124,6 +124,7 @@ cjpm build --cfg
 cd examples
 export LVGLCJ_LIB_DIR=../lib/linux-x64      # Windows 用 ../lib/windows-x64
 cjpm build --cfg
+./target/release/bin/main all               # 全功能演示：8 个标签页，覆盖全部公开 API
 ./target/release/bin/main hello             # 最小窗口
 ./target/release/bin/main widgets           # 控件总览
 ./target/release/bin/main touch             # 触摸/指针 + 校准
