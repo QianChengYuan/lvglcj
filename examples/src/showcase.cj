@@ -58,7 +58,24 @@ private func block(parent: Widget, w: Int32, h: Int32, r: UInt8, g: UInt8, b: UI
 
 /* ==================== 1. 控件 ==================== */
 
-private func showcaseWidgets(box: Widget, kb: Keyboard): Unit {
+/** 软键盘的显示状态；闭包不能捕获可变局部变量，用引用类型记住 */
+private class KbState {
+    var shown: Bool
+    init(shown: Bool) {
+        this.shown = shown
+    }
+}
+
+private func setKeyboardVisible(kb: Keyboard, st: KbState, on: Bool): Unit {
+    if (on) {
+        kb.removeFlag(LV_OBJ_FLAG_HIDDEN)
+    } else {
+        kb.addFlag(LV_OBJ_FLAG_HIDDEN)
+    }
+    st.shown = on
+}
+
+private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit {
     caption(box, "基础控件：按钮 / 开关 / 复选框 / 滑块 / 进度条 / 圆弧 / LED / 下拉 / 滚轮 / 数字框 / 文本域")
 
     let r1 = row(box, 52)
@@ -157,12 +174,25 @@ private func showcaseWidgets(box: Widget, kb: Keyboard): Unit {
     spin.range(0, 100)
     spin.value(20)
 
-    // 文本域 + 键盘：键盘是浮在整个屏幕上的，所以挂在 screen 而不是标签页里
-    let ta = TextArea(box)
-    ta.size(420, 64)
-    ta.text("点这里，底部会弹出软键盘…")
+    // 文本域 + 软键盘：键盘挂在 screen 上浮在所有标签页之上，默认隐藏，
+    // 点文本域或点「软键盘」按钮才弹出，点键盘的 ✓ / ✕ 收起。
+    let rta = row(box, 48)
+    let ta = TextArea(rta)
+    ta.size(420, 44)
+    ta.text("点这里弹出软键盘…")
     ta.oneLine(false)
+    let kbt = Button(rta)
+    kbt.size(120, 40)
+    let kbl = Label(kbt)
+    kbl.text("软键盘")
+    kbl.center()
     kb.target(ta)
+
+    ta.on(LV_EVENT_CLICKED) {_ => setKeyboardVisible(kb, kbState, true)}
+    ta.on(LV_EVENT_FOCUSED) {_ => setKeyboardVisible(kb, kbState, true)}
+    kb.on(LV_EVENT_READY) {_ => setKeyboardVisible(kb, kbState, false)}
+    kb.on(LV_EVENT_CANCEL) {_ => setKeyboardVisible(kb, kbState, false)}
+    kbt.onClick {=> setKeyboardVisible(kb, kbState, !kbState.shown)}
 }
 
 /* ==================== 2. 布局 ==================== */
@@ -714,11 +744,17 @@ func demoShowcase(): Unit {
     let tv = TabView(scr)
     tv.size(800, 480)
 
-    // 键盘挂在 screen 上（它要浮在所有标签页之上），点文本域时由 LVGL 自动弹出
+    // 键盘挂在 screen 上（浮在所有标签页之上），默认隐藏：
+    // 点文本域或点「软键盘」按钮才弹出，点键盘的 ✓ / ✕ 收起。
     let kb = Keyboard(scr)
-    kb.size(760, 220)
+    kb.size(760, 200)
+    kb.align(LV_ALIGN_BOTTOM_MID, dx: 0, dy: -8)
+    kb.addFlag(LV_OBJ_FLAG_HIDDEN)
 
-    showcaseWidgets(page(tv, "控件"), kb)
+    let kbState = KbState(false)
+    showcaseWidgets(page(tv, "控件"), kb, kbState)
+    // 切标签页时收起键盘，免得它盖住别的页面
+    tv.on(LV_EVENT_VALUE_CHANGED) {_ => setKeyboardVisible(kb, kbState, false)}
     showcaseLayout(page(tv, "布局"))
     showcaseStyles(page(tv, "样式"))
     showcaseBinding(page(tv, "绑定"))

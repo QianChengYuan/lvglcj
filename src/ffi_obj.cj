@@ -161,7 +161,13 @@ public const LV_EVENT_LONG_PRESSED: UInt32 = 8
 public const LV_EVENT_LONG_PRESSED_REPEAT: UInt32 = 9
 public const LV_EVENT_CLICKED: UInt32 = 10
 public const LV_EVENT_RELEASED: UInt32 = 11
+public const LV_EVENT_KEY: UInt32 = 17
+public const LV_EVENT_FOCUSED: UInt32 = 19
+public const LV_EVENT_DEFOCUSED: UInt32 = 20
 public const LV_EVENT_VALUE_CHANGED: UInt32 = 35
+/* lv_keyboard 的「确定 / 取消」；9.5 在 CANCEL 之后还加了 STATE_CHANGED=40 */
+public const LV_EVENT_READY: UInt32 = 38
+public const LV_EVENT_CANCEL: UInt32 = 39
 public const LV_EVENT_DELETE: UInt32 = 42
 
 /* LV_INDEV_TYPE_*（lv_indev.h） */

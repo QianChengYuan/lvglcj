@@ -712,7 +712,7 @@ item.scrollToView(anim: true)                      // 定位到某一项
 | `Dropdown(parent)` | `lv_dropdown_create` | `options(s)`（`\n` 分隔） |
 | `Roller(parent)` | `lv_roller_create` | `options(s, mode!: UInt32 = LV_ROLLER_MODE_NORMAL)`、`selected(i)` |
 | `TextArea(parent)` | `lv_textarea_create` | `text(s)`、`oneLine(on)`、`password(on)` |
-| `Keyboard(parent)` | `lv_keyboard_create` | `target(ta: TextArea)` |
+| `Keyboard(parent)` | `lv_keyboard_create` | `target(ta: TextArea)`；LVGL 的键盘**不会自动显示/隐藏**，用 `addFlag(LV_OBJ_FLAG_HIDDEN)` 隐藏、`on(LV_EVENT_READY / LV_EVENT_CANCEL)` 收起 |
 | `List(parent)` | `lv_list_create` | `addText(s): Widget`、`addButton(s): Button` |
 | `Table(parent)` | `lv_table_create` | `cellValue(row, col, s)` |
 | `TabView(parent)` | `lv_tabview_create` | `addTab(name): Widget` |
