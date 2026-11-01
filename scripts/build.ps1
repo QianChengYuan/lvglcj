@@ -102,14 +102,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 5) examples（独立模块，需 --cfg 打开自定义构建开关）
 if ($Examples) {
-    Write-Host "==> examples: cjpm build --cfg"
-    Push-Location (Join-Path $root "examples")
-    try {
-        & cjpm build --cfg
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    } finally {
-        Pop-Location
-    }
+    # 交给 build-example.ps1：它除了 cjpm build --cfg，还会把 SDL2/FreeType/
+    # libstdc++/libwinpthread 与仓颉运行时的 DLL 拷到产物目录，省去运行前改 PATH。
+    Write-Host "==> examples: build-example.ps1"
+    & (Join-Path $PSScriptRoot "build-example.ps1") -LibDir $libDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # 6) 测试

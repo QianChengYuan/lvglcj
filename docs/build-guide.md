@@ -85,21 +85,29 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
 ### 2.3 编仓颉工程并运行
 
 ```powershell
-# 一行搞定：自动设 LVGLCJ_LIB_DIR（绝对路径）+ 编库 + 编 examples
+# 一行搞定：自动设 LVGLCJ_LIB_DIR（绝对路径）+ 编 examples + 拷运行时 DLL
 ./scripts/build.ps1 -Examples
-
-$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH    # SDL2.dll / libfreetype-6.dll
 ./examples/target/release/bin/main.exe widgets
+```
+
+只要示例、不想重编库时：
+
+```powershell
+./scripts/build-example.ps1 -Run widgets
 ```
 
 等价的手工命令：
 
 ```powershell
-$env:LVGLCJ_LIB_DIR = "$PWD/lib/windows-x64"
+$env:LVGLCJ_LIB_DIR = "$PWD/lib/windows-x64"      # 必须绝对路径
 cd examples; cjpm build --cfg
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH   # 或把 DLL 拷到 exe 同目录
 ```
 
-> 运行期 DLL 必须在 `PATH` 里（或在 exe 同目录）：`SDL2.dll`、`libfreetype-6.dll`。
+> 运行期 DLL 不止 `SDL2.dll` / `libfreetype-6.dll`：MSYS2 的 `libfreetype-6.dll` 还依赖
+> `libstdc++-6.dll`、`libgcc_s_seh-1.dll`，后者又依赖 `libwinpthread-1.dll`；再加上仓颉运行时的
+> `libboundscheck.dll`、`libcangjie-runtime.dll`。缺任意一个都会启动即失败。
+> `build-example.ps1` 会把这 7 个 DLL 全部拷进 `examples/target/release/bin/`，之后双击即可运行。
 
 ---
 
@@ -142,6 +150,12 @@ export BUILD_DIR=/opt/build-sdl        # 可选：放原生盘，比 /mnt/c 快�
 ```bash
 bash scripts/build.sh --examples        # 自动设 LVGLCJ_LIB_DIR（绝对路径）+ 编库 + 编 examples
 ./examples/target/release/bin/main widgets      # WSLg 直接弹窗
+```
+
+只编示例时（自动设变量 + LD_LIBRARY_PATH）：
+
+```bash
+./scripts/build-example.sh --run widgets
 ```
 
 等价的手工命令：

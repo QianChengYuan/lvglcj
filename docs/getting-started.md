@@ -120,9 +120,21 @@ cjpm build --cfg
 
 不想自己写代码，就先看示例：
 
+```powershell
+# Windows：自动设 LVGLCJ_LIB_DIR + 把运行时 DLL 拷到 exe 旁边
+./scripts/build-example.ps1 -Run all
+```
+
+```bash
+# Linux / WSL
+./scripts/build-example.sh --run all
+```
+
+也可以手工来（变量必须是**绝对路径**）：
+
 ```bash
 cd examples
-export LVGLCJ_LIB_DIR=../lib/linux-x64      # Windows 用 ../lib/windows-x64
+export LVGLCJ_LIB_DIR="$PWD/../lib/linux-x64"   # Windows 用 "$PWD/../lib/windows-x64"
 cjpm build --cfg
 ./target/release/bin/main all               # 全功能演示：8 个标签页，覆盖全部公开 API
 ./target/release/bin/main hello             # 最小窗口

@@ -253,17 +253,15 @@ lib/                                    # 只有编译产物，不含配置
 > # 2) 编 LVGL + 垫片 → lib/windows-x64/
 > ./scripts/build-lvgl-sdl.ps1
 >
-> # 3) 编示例并运行（运行时 DLL 在 ucrt64/bin）
-> $env:LVGLCJ_LIB_DIR = "lib/windows-x64"
-> cd examples; cjpm build --cfg
-> $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
-> ./target/release/bin/main.exe widgets
+> # 3) 编示例并运行（脚本自动设 LVGLCJ_LIB_DIR，并把 DLL 拷到 exe 旁边）
+> ./scripts/build-example.ps1 -Run widgets
 > ```
 >
-> 注意三点：
+> 注意四点：
 > 1. **必须用 64 位 ucrt64**（与 cjc 目标 `x86_64-w64-mingw32` 一致）；`mingw32`/`clang64` 的位数或 CRT 不匹配，链接必然失败；
-> 2. 运行期需要 `SDL2.dll`、`libfreetype-6.dll` 在 `PATH`（即 `C:\msys64\ucrt64\bin`），否则启动即报缺 DLL；
-> 3. 传路径给 MSYS2 的 gcc/cmake 一律用**正斜杠**（`C:/msys64/...`），反斜杠会被当作转义符。
+> 2. 直接 `cd examples; cjpm build` 会报 `can not find the library 'lvgl' which is listed in 'ffi.c' field`——**`LVGLCJ_LIB_DIR` 必须显式设置**，脚本做的事就是替你设好它；
+> 3. 运行期需要 `SDL2.dll`、`libfreetype-6.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll` 等依赖；`build-example.ps1` 已把它们拷进 `examples/target/release/bin/`，不再需要改 `PATH`（手工构建时才需要）。
+> 4. 传路径给 MSYS2 的 gcc/cmake 一律用**正斜杠**（`C:/msys64/...`），反斜杠会被当作转义符。
 
 > **WSL（Ubuntu 24.04）已验证全链路跑通**，见「六、构建与运行步骤 → WSL 准备」。
 
@@ -569,18 +567,29 @@ sudo usermod -aG video,input $USER    # 避免每次 sudo
 
 ### 本机验证（SDL：Windows 原生 / WSLg）
 
-```bash
-cd examples && cjpm build --cfg                    # --cfg 见 cjpm.toml 的 [profile.customized-option]
-./target/release/bin/main all                      # 全功能演示：8 个标签页逐个点
-./target/release/bin/main widgets                  # Windows 弹窗 / WSLg 弹窗
+```powershell
+# Windows：自动设 LVGLCJ_LIB_DIR + 把运行时 DLL 拷到 exe 旁边
+./scripts/build-example.ps1 -Run all               # 全功能演示：8 个标签页逐个点
 ```
 
-Windows 上运行前必须把 DLL 目录加进 PATH（`SDL2.dll`、`libfreetype-6.dll`）：
+```bash
+# WSL / Linux
+./scripts/build-example.sh --run all
+```
+
+手工构建才需要自己设变量和 PATH：
 
 ```powershell
-$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+$env:LVGLCJ_LIB_DIR = "$PWD/lib/windows-x64"       # 必须绝对路径，否则报 can not find the library 'lvgl'
+cd examples; cjpm build --cfg                      # --cfg 见 cjpm.toml 的 [profile.customized-option]
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH    # 或把 DLL 拷到 exe 同目录
 ./target/release/bin/main.exe widgets
 ```
+
+> 运行期依赖不止 `SDL2.dll` / `libfreetype-6.dll`：MSYS2 的 `libfreetype-6.dll` 自己还依赖
+> `libstdc++-6.dll`、`libgcc_s_seh-1.dll`，后者又依赖 `libwinpthread-1.dll`，缺任意一个都会
+> 启动即失败（`0xC0000139` / `cannot open shared object file`）。`build-example.ps1` 会把这
+> 一整套（含仓颉运行时的 `libboundscheck.dll`、`libcangjie-runtime.dll`）都拷进产物目录。
 
 > `liblvgl.a` 是静态库，**带不出自己的依赖**：SDL 后端要 `-lSDL2`、中文 FreeType 要 `-lfreetype`，两个都必须由**最终链接方**补。`examples/cjpm.toml` 里已写好 `link-option = "-lSDL2 -lfreetype"`；自己新建工程引用本库时也要照抄这一行，否则会看到成片的 `undefined symbol: SDL_Init` / `undefined symbol: FT_Init_FreeType`。
 

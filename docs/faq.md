@@ -32,10 +32,12 @@ export LVGLCJ_LIB_DIR=lib/linux-x64        # WSL / Linux
 不想手填就用脚本，它会按平台自动挑目录并转成绝对路径：
 
 ```powershell
-./scripts/build.ps1            # Windows
+./scripts/build.ps1            # Windows（库 + 可选 -Examples）
+./scripts/build-example.ps1    # 只编 examples，并顺手拷运行时 DLL
 ```
 ```bash
 bash scripts/build.sh          # Linux / WSL
+./scripts/build-example.sh     # 只编 examples
 ```
 
 ### A2. `the environment variable '${...:-...}' is wrong in cjpm.toml`
@@ -120,13 +122,29 @@ bash -lc './target/release/bin/main widgets'
 
 用 `wsl -d 发行版 -e bash -c "..."` 这类**非登录 shell** 最容易踩。
 
-### B2. Windows 上提示缺 `SDL2.dll` / `libfreetype-6.dll`
+### B2. Windows 上提示缺 `SDL2.dll` / `libfreetype-6.dll` / `libstdc++-6.dll`
 
 ```powershell
 $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
 ```
 
-或把这两个 DLL 拷到 exe 同目录。
+或把 DLL 拷到 exe 同目录。注意依赖是**一串**，只拷前两个不够：
+
+| DLL | 谁需要它 |
+| --- | --- |
+| `SDL2.dll` | lvglcj 的 SDL 后端 |
+| `libfreetype-6.dll` | FreeType 字体 |
+| `libstdc++-6.dll`、`libgcc_s_seh-1.dll` | MSYS2 的 `libfreetype-6.dll` 自己 |
+| `libwinpthread-1.dll` | 上面这两个 C++ 运行库 |
+| `libboundscheck.dll`、`libcangjie-runtime.dll` | 仓颉运行时（在 `$env:CANGJIE_HOME\runtime\lib\windows_x86_64_cjnative`） |
+
+一次搞定的办法：
+
+```powershell
+./scripts/build-example.ps1
+```
+
+它会把上面 7 个 DLL 全部拷进 `examples/target/release/bin/`，之后双击 `main.exe` 即可运行。
 
 ### B2'. Windows 上进程一启动就 `0xC0000139`（或 `exit code 3221225785`，无任何输出）
 
