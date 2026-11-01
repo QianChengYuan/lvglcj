@@ -38,6 +38,33 @@ foreign func lv_subject_notify(subject: CPointer<lv_subject_t>): Unit
 
 foreign func lv_subject_deinit(subject: CPointer<lv_subject_t>): Unit
 
+/* ---- 字符串主题（缓冲区由垫片随 subject 一起分配，capacity 单位是字节） ---- */
+
+/** 分配 + `lv_subject_init_string`；`capacity` 含结尾 0，实际最多存 capacity-1 字节 */
+foreign func lvglcj_subject_new_string_cjbindwrapper(value: CString, capacity: UIntNative): CPointer<lv_subject_t>
+
+/** `lv_subject_copy_string`：截断到 capacity-1，且只在值变化时通知 */
+foreign func lvglcj_subject_string_set_cjbindwrapper(subject: CPointer<lv_subject_t>, value: CString): Unit
+
+/** 返回主题内部的 `const char *`（不拷贝）；仓颉侧按 UTF-8 逐字节读成 String */
+foreign func lvglcj_subject_get_string_cjbindwrapper(subject: CPointer<lv_subject_t>): CPointer<UInt8>
+
+/* ---- 颜色主题（值按 0xRRGGBB 打包，避免 lv_color_t 结构体按值跨 FFI） ---- */
+
+foreign func lvglcj_subject_new_color_cjbindwrapper(rgb: UInt32): CPointer<lv_subject_t>
+
+foreign func lvglcj_subject_get_color_cjbindwrapper(subject: CPointer<lv_subject_t>): UInt32
+
+foreign func lvglcj_subject_set_color_cjbindwrapper(subject: CPointer<lv_subject_t>, rgb: UInt32): Unit
+
+/* ---- 指针主题（只存地址，不解引用） ---- */
+
+foreign func lvglcj_subject_new_pointer_cjbindwrapper(value: CPointer<Unit>): CPointer<lv_subject_t>
+
+foreign func lvglcj_subject_set_pointer_cjbindwrapper(subject: CPointer<lv_subject_t>, value: CPointer<Unit>): Unit
+
+foreign func lvglcj_subject_get_pointer_cjbindwrapper(subject: CPointer<lv_subject_t>): CPointer<Unit>
+
 /* ==================== 观察者 ==================== */
 
 /*

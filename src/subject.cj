@@ -59,13 +59,26 @@ public enum CompareOp {
  * `owner` 是所属主题的句柄地址：只有它有权清掉这条目，
  * 避免「token 地址被别的主题复用后误删别人条目」。
  */
+/**
+ * 观察者回调的四种值形态（int / string / color / pointer）。
+ *
+ * 条目表 `OBSERVER_ENTRIES` 是四种主题**共用**的：token 唯一，回调进来先查表，
+ * 再看条目的 `cb` 是哪个分支，因此四个 @C 蹦床可以共用同一套 token / 释放逻辑。
+ */
+private enum ObserverCb {
+    | IntCb((Int32) -> Unit)
+    | StrCb((String) -> Unit)
+    | ColCb((UInt32) -> Unit)
+    | PtrCb((CPointer<Unit>) -> Unit)
+}
+
 private class ObserverEntry {
     let token: CPointer<UInt8>
-    let cb: (Int32) -> Unit
+    let cb: ObserverCb
     let owner: UIntNative
     var observer: CPointer<lv_observer_t>
 
-    init(token: CPointer<UInt8>, cb: (Int32) -> Unit, owner: UIntNative) {
+    init(token: CPointer<UInt8>, cb: ObserverCb, owner: UIntNative) {
         this.token = token
         this.cb = cb
         this.owner = owner
@@ -148,18 +161,145 @@ private func cancelObserver(token: CPointer<UInt8>): Unit {
     }
 }
 
-/** LVGL 的通知入口：按 observer 的 user_data 回查闭包，再把主题当前值喂给它 */
+/**
+ * 从 C 侧读一个以 0 结尾的 UTF-8 字符串。
+ *
+ * 这里不构造 `CString`（本库手里只有裸指针），逐字节读到 `Array<UInt8>` 再
+ * `String.fromUtf8` —— UI 文本量级下这点拷贝可以忽略。
+ */
+private func readCString(p: CPointer<UInt8>): String {
+    if (p.isNull()) {
+        return ""
+    }
+    let bytes = ArrayList<UInt8>()
+    var i: Int64 = 0
+    while (true) {
+        let b = unsafe { p.read(i) }
+        if (b == 0) {
+            break
+        }
+        bytes.add(b)
+        i += 1
+    }
+    String.fromUtf8(bytes.toArray())
+}
+
+private func subjectString(subject: CPointer<lv_subject_t>): String {
+    readCString(unsafe { lvglcj_subject_get_string_cjbindwrapper(subject) })
+}
+
+/** LVGL 的通知入口（int 主题）：按 observer 的 user_data 回查闭包，再把主题当前值喂给它 */
 @C
 func cjSubjectObserver(observer: CPointer<lv_observer_t>, subject: CPointer<lv_subject_t>): Unit {
     let token = unsafe { lv_observer_get_user_data(observer) }
     match (OBSERVER_ENTRIES.get(token.toUIntNative())) {
-        case Some(e) => try {
-            e.cb(unsafe { lv_subject_get_int(subject) })
-        } catch (err: Exception) {
-            App.reportCallbackError(err)
+        case Some(e) => match (e.cb) {
+            case IntCb(f) => try {
+                f(unsafe { lv_subject_get_int(subject) })
+            } catch (err: Exception) {
+                App.reportCallbackError(err)
+            }
+            case _ => ()
         }
         case None => ()
     }
+}
+
+/** LVGL 的通知入口（string 主题） */
+@C
+func cjStringSubjectObserver(observer: CPointer<lv_observer_t>, subject: CPointer<lv_subject_t>): Unit {
+    let token = unsafe { lv_observer_get_user_data(observer) }
+    match (OBSERVER_ENTRIES.get(token.toUIntNative())) {
+        case Some(e) => match (e.cb) {
+            case StrCb(f) => try {
+                f(subjectString(subject))
+            } catch (err: Exception) {
+                App.reportCallbackError(err)
+            }
+            case _ => ()
+        }
+        case None => ()
+    }
+}
+
+/** LVGL 的通知入口（color 主题，值按 0xRRGGBB 打包） */
+@C
+func cjColorSubjectObserver(observer: CPointer<lv_observer_t>, subject: CPointer<lv_subject_t>): Unit {
+    let token = unsafe { lv_observer_get_user_data(observer) }
+    match (OBSERVER_ENTRIES.get(token.toUIntNative())) {
+        case Some(e) => match (e.cb) {
+            case ColCb(f) => try {
+                f(unsafe { lvglcj_subject_get_color_cjbindwrapper(subject) })
+            } catch (err: Exception) {
+                App.reportCallbackError(err)
+            }
+            case _ => ()
+        }
+        case None => ()
+    }
+}
+
+/** LVGL 的通知入口（pointer 主题，只传地址） */
+@C
+func cjPointerSubjectObserver(observer: CPointer<lv_observer_t>, subject: CPointer<lv_subject_t>): Unit {
+    let token = unsafe { lv_observer_get_user_data(observer) }
+    match (OBSERVER_ENTRIES.get(token.toUIntNative())) {
+        case Some(e) => match (e.cb) {
+            case PtrCb(f) => try {
+                f(unsafe { lvglcj_subject_get_pointer_cjbindwrapper(subject) })
+            } catch (err: Exception) {
+                App.reportCallbackError(err)
+            }
+            case _ => ()
+        }
+        case None => ()
+    }
+}
+
+/**
+ * 四个主题类共用的「注册观察者」流程。
+ *
+ * 顺序不能变：**先入表再注册** —— `lv_subject_add_observer*` 在返回前就会同步回调
+ * 一次，条目晚一步就丢掉首帧。`to` 为 Some 时走 `add_observer_obj`，控件删除时
+ * LVGL 自动摘观察者；本库再挂一个 DELETE 回调回收闭包与条目（排在 LVGL 那个之后）。
+ */
+private func attachObserver(subject: CPointer<lv_subject_t>, tokens: ArrayList<CPointer<UInt8>>, cb: ObserverCb,
+    trampoline: CFunc<(CPointer<lv_observer_t>, CPointer<lv_subject_t>) -> Unit>, to: ?Widget): Observer {
+    let owner = subject.toUIntNative()
+    let token = allocObserverToken()
+    tokens.add(token)
+    let entry = ObserverEntry(token, cb, owner)
+    OBSERVER_ENTRIES.add(token.toUIntNative(), entry)
+    let obs = match (to) {
+        case Some(w) => unsafe { lv_subject_add_observer_obj(subject, trampoline, w.raw(), token) }
+        case None => unsafe { lv_subject_add_observer(subject, trampoline, token) }
+    }
+    if (obs.isNull()) {
+        OBSERVER_ENTRIES.remove(token.toUIntNative())
+        throw LvglException("观察者注册失败")
+    }
+    entry.observer = obs
+    if (let Some(w) <- to) {
+        w.onEvent(LV_EVENT_DELETE) {_ => releaseObserver(token, owner)}
+    }
+    Observer(token)
+}
+
+/** 四个主题类共用的关闭流程；返回空指针，由调用方写回自己的字段 */
+private func releaseSubject(subject: CPointer<lv_subject_t>, tokens: ArrayList<CPointer<UInt8>>): CPointer<lv_subject_t> {
+    if (subject.isNull()) {
+        return subject
+    }
+    let owner = subject.toUIntNative()
+    for (t in tokens) {
+        releaseObserver(t, owner)
+    }
+    unsafe { lvglcj_subject_free_cjbindwrapper(subject) }
+    for (t in tokens) {
+        unsafe { LibC.free(t) }
+    }
+    tokens.clear()
+    CPointer<lv_subject_t>()
 }
 
 /**
@@ -337,19 +477,7 @@ public class Subject {
         if (handle.isNull()) {
             throw LvglException("主题已释放")
         }
-        let owner = handle.toUIntNative()
-        let token = allocObserverToken()
-        tokens.add(token)
-        // 必须先入表再注册：add_observer 在返回前就同步回调，晚了首帧就丢了
-        let entry = ObserverEntry(token, cb, owner)
-        OBSERVER_ENTRIES.add(token.toUIntNative(), entry)
-        let obs = unsafe { lv_subject_add_observer(handle, cjSubjectObserver, token) }
-        if (obs.isNull()) {
-            OBSERVER_ENTRIES.remove(token.toUIntNative())
-            throw LvglException("观察者注册失败")
-        }
-        entry.observer = obs
-        Observer(token)
+        attachObserver(handle, tokens, IntCb(cb), cjSubjectObserver, None)
     }
 
     /**
@@ -369,20 +497,7 @@ public class Subject {
         if (handle.isNull()) {
             throw LvglException("主题已释放")
         }
-        let owner = handle.toUIntNative()
-        let token = allocObserverToken()
-        tokens.add(token)
-        let entry = ObserverEntry(token, cb, owner)
-        OBSERVER_ENTRIES.add(token.toUIntNative(), entry)
-        let obs = unsafe { lv_subject_add_observer_obj(handle, cjSubjectObserver, to.raw(), token) }
-        if (obs.isNull()) {
-            OBSERVER_ENTRIES.remove(token.toUIntNative())
-            throw LvglException("观察者注册失败")
-        }
-        entry.observer = obs
-        // 控件删除 → LVGL 已摘掉 observer，这里只回收闭包与条目
-        to.onEvent(LV_EVENT_DELETE) {_ => releaseObserver(token, owner)}
-        Observer(token)
+        attachObserver(handle, tokens, IntCb(cb), cjSubjectObserver, Some(to))
     }
 
     /** 是否已释放 */
@@ -403,16 +518,7 @@ public class Subject {
             return
         }
         App.assertUIThread("Subject.close")
-        let owner = handle.toUIntNative()
-        for (t in tokens) {
-            releaseObserver(t, owner)
-        }
-        unsafe { lvglcj_subject_free_cjbindwrapper(handle) }
-        for (t in tokens) {
-            unsafe { LibC.free(t) }
-        }
-        tokens.clear()
-        handle = CPointer<lv_subject_t>()
+        handle = releaseSubject(handle, tokens)
     }
 
     /** 当前登记中的带闭包观察者数（声明式绑定不计入；正常应回落到 0） */
@@ -453,6 +559,319 @@ public class Observer {
         let t = token
         token = CPointer<UInt8>()
         cancelObserver(t)
+    }
+}
+
+/* ==================== 其余三种值形态 ==================== */
+
+/**
+ * 字符串数据主题（`lv_subject_init_string`）。
+ *
+ * LVGL 的字符串主题**不拷贝**初始值，只存指针，所以调用方要自己提供两块缓冲；
+ * 本库把缓冲交给垫片随 subject 一起分配（容量在 `of` 时定死，写超会被截断）。
+ *
+ * ```cangjie
+ * let tip = StringSubject.of("就绪", capacity: 64)
+ * label.bindText(tip)          // 直接贴字符串，不走 printf
+ * tip.set("正在同步…")
+ * tip.close()
+ * ```
+ *
+ * 注意：`capacity` 是字节数（含结尾 0），UTF-8 下一个汉字占 3 字节，
+ * 容量不够时 `set` 会**静默截断**（LVGL 行为），所以按最长文本留足。
+ */
+public class StringSubject {
+    private var handle: CPointer<lv_subject_t>
+    private let tokens: ArrayList<CPointer<UInt8>> = ArrayList<CPointer<UInt8>>()
+
+    private init(handle: CPointer<lv_subject_t>) {
+        this.handle = handle
+    }
+
+    /**
+     * 新建字符串主题。
+     * @param initial 初始值（过长会被截断）
+     * @param capacity 缓冲区字节数（含结尾 0，至少 2）
+     * @return 主题
+     * @throws[LvglException] 分配失败时
+     */
+    public static func of(initial: String, capacity!: Int64 = 128): StringSubject {
+        App.assertUIThread("StringSubject.of")
+        let cap = if (capacity < 2) {
+            2
+        } else {
+            capacity
+        }
+        let h = withCString(initial) {cs => unsafe { lvglcj_subject_new_string_cjbindwrapper(cs, UIntNative(cap)) }}
+        if (h.isNull()) {
+            throw LvglException("字符串主题分配失败（capacity=${cap}）")
+        }
+        StringSubject(h)
+    }
+
+    /** 当前值；主题已释放时返回空串（读宽容约定） */
+    public func get(): String {
+        if (handle.isNull()) {
+            ""
+        } else {
+            subjectString(handle)
+        }
+    }
+
+    /**
+     * 设值并通知观察者（值没变不通知；超容量截断）。
+     * @param v 新值
+     * @throws[LvglException] 主题已释放时
+     */
+    public func set(v: String): Unit {
+        App.assertUIThread("StringSubject.set")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        withCString(v) {cs => unsafe { lvglcj_subject_string_set_cjbindwrapper(handle, cs) }}
+    }
+
+    /** 纯订阅；注册时立即回调一次 */
+    public func subscribe(cb: (String) -> Unit): Observer {
+        App.assertUIThread("StringSubject.subscribe")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(handle, tokens, StrCb(cb), cjStringSubjectObserver, None)
+    }
+
+    /** 绑定到控件（控件删除自动解绑）；注册时立即回调一次 */
+    public func bind(to: Widget, cb: (String) -> Unit): Observer {
+        App.assertUIThread("StringSubject.bind")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(handle, tokens, StrCb(cb), cjStringSubjectObserver, Some(to))
+    }
+
+    /** 值没变也强制通知一次 */
+    public func notify(): Unit {
+        App.assertUIThread("StringSubject.notify")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        unsafe { lv_subject_notify(handle) }
+    }
+
+    /** 是否已释放 */
+    public func isClosed(): Bool {
+        handle.isNull()
+    }
+
+    /** 释放主题（幂等）；内部缓冲随 subject 一起回收 */
+    public func close(): Unit {
+        if (handle.isNull()) {
+            return
+        }
+        App.assertUIThread("StringSubject.close")
+        handle = releaseSubject(handle, tokens)
+    }
+
+    internal func raw(): CPointer<lv_subject_t> {
+        handle
+    }
+}
+
+/**
+ * 颜色数据主题（`lv_subject_init_color`）。
+ *
+ * 值在本库边界按 **0xRRGGBB** 打包成 `UInt32`，避免 `lv_color_t` 结构体按值跨 FFI
+ * （它的字段顺序与打包方式跟 `LV_COLOR_DEPTH` 有关，按 int 传最稳）。
+ *
+ * ```cangjie
+ * let tint = ColorSubject.of(0x1E90FF)
+ * tint.subscribe { rgb => panel.setStyleBgColor(rgb >> 16, (rgb >> 8) & 0xFF, rgb & 0xFF) }
+ * tint.set(0xFF6A00)
+ * ```
+ */
+public class ColorSubject {
+    private var handle: CPointer<lv_subject_t>
+    private let tokens: ArrayList<CPointer<UInt8>> = ArrayList<CPointer<UInt8>>()
+
+    private init(handle: CPointer<lv_subject_t>) {
+        this.handle = handle
+    }
+
+    /**
+     * 新建颜色主题。
+     * @param initial 初始颜色（0xRRGGBB）
+     * @return 主题
+     * @throws[LvglException] 分配失败时
+     */
+    public static func of(initial: UInt32): ColorSubject {
+        App.assertUIThread("ColorSubject.of")
+        let h = unsafe { lvglcj_subject_new_color_cjbindwrapper(initial) }
+        if (h.isNull()) {
+            throw LvglException("颜色主题分配失败")
+        }
+        ColorSubject(h)
+    }
+
+    /** 当前颜色（0xRRGGBB）；主题已释放时返回 0 */
+    public func get(): UInt32 {
+        if (handle.isNull()) {
+            0
+        } else {
+            unsafe { lvglcj_subject_get_color_cjbindwrapper(handle) }
+        }
+    }
+
+    /**
+     * 设色并通知观察者（值没变不通知）。
+     * @param rgb 新颜色（0xRRGGBB，高 8 位忽略）
+     */
+    public func set(rgb: UInt32): Unit {
+        App.assertUIThread("ColorSubject.set")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        unsafe { lvglcj_subject_set_color_cjbindwrapper(handle, rgb) }
+    }
+
+    /** 纯订阅；注册时立即回调一次 */
+    public func subscribe(cb: (UInt32) -> Unit): Observer {
+        App.assertUIThread("ColorSubject.subscribe")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(handle, tokens, ColCb(cb), cjColorSubjectObserver, None)
+    }
+
+    /** 绑定到控件（控件删除自动解绑）；注册时立即回调一次 */
+    public func bind(to: Widget, cb: (UInt32) -> Unit): Observer {
+        App.assertUIThread("ColorSubject.bind")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(raw(), tokens, ColCb(cb), cjColorSubjectObserver, Some(to))
+    }
+
+    /** 值没变也强制通知一次 */
+    public func notify(): Unit {
+        App.assertUIThread("ColorSubject.notify")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        unsafe { lv_subject_notify(handle) }
+    }
+
+    /** 是否已释放 */
+    public func isClosed(): Bool {
+        handle.isNull()
+    }
+
+    /** 释放主题（幂等） */
+    public func close(): Unit {
+        if (handle.isNull()) {
+            return
+        }
+        App.assertUIThread("ColorSubject.close")
+        handle = releaseSubject(handle, tokens)
+    }
+
+    internal func raw(): CPointer<lv_subject_t> {
+        handle
+    }
+}
+
+/**
+ * 指针数据主题（`lv_subject_init_pointer`）。
+ *
+ * 只存地址、不解引用：适合「当前选中项」这类主题 —— 值是模型对象的裸地址，
+ * 观察者自己决定怎么解释它。生命周期由调用方保证（指针悬垂 LVGL 不管）。
+ */
+public class PointerSubject {
+    private var handle: CPointer<lv_subject_t>
+    private let tokens: ArrayList<CPointer<UInt8>> = ArrayList<CPointer<UInt8>>()
+
+    private init(handle: CPointer<lv_subject_t>) {
+        this.handle = handle
+    }
+
+    /**
+     * 新建指针主题。
+     * @param initial 初始地址（可为空指针）
+     * @return 主题
+     * @throws[LvglException] 分配失败时
+     */
+    public static func of(initial: CPointer<Unit>): PointerSubject {
+        App.assertUIThread("PointerSubject.of")
+        let h = unsafe { lvglcj_subject_new_pointer_cjbindwrapper(initial) }
+        if (h.isNull()) {
+            throw LvglException("指针主题分配失败")
+        }
+        PointerSubject(h)
+    }
+
+    /** 当前地址；主题已释放时返回空指针 */
+    public func get(): CPointer<Unit> {
+        if (handle.isNull()) {
+            CPointer<Unit>()
+        } else {
+            unsafe { lvglcj_subject_get_pointer_cjbindwrapper(handle) }
+        }
+    }
+
+    /**
+     * 换地址并通知观察者（地址没变不通知）。
+     * @param value 新地址
+     */
+    public func set(value: CPointer<Unit>): Unit {
+        App.assertUIThread("PointerSubject.set")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        unsafe { lvglcj_subject_set_pointer_cjbindwrapper(handle, value) }
+    }
+
+    /** 纯订阅；注册时立即回调一次 */
+    public func subscribe(cb: (CPointer<Unit>) -> Unit): Observer {
+        App.assertUIThread("PointerSubject.subscribe")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(handle, tokens, PtrCb(cb), cjPointerSubjectObserver, None)
+    }
+
+    /** 绑定到控件（控件删除自动解绑）；注册时立即回调一次 */
+    public func bind(to: Widget, cb: (CPointer<Unit>) -> Unit): Observer {
+        App.assertUIThread("PointerSubject.bind")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        attachObserver(raw(), tokens, PtrCb(cb), cjPointerSubjectObserver, Some(to))
+    }
+
+    /** 值没变也强制通知一次 */
+    public func notify(): Unit {
+        App.assertUIThread("PointerSubject.notify")
+        if (handle.isNull()) {
+            throw LvglException("主题已释放")
+        }
+        unsafe { lv_subject_notify(handle) }
+    }
+
+    /** 是否已释放 */
+    public func isClosed(): Bool {
+        handle.isNull()
+    }
+
+    /** 释放主题（幂等） */
+    public func close(): Unit {
+        if (handle.isNull()) {
+            return
+        }
+        App.assertUIThread("PointerSubject.close")
+        handle = releaseSubject(handle, tokens)
+    }
+
+    internal func raw(): CPointer<lv_subject_t> {
+        handle
     }
 }
 
@@ -589,6 +1008,26 @@ extend Dropdown {
     public func bindValue(sub: Subject): Dropdown {
         App.assertUIThread("Dropdown.bindValue")
         unsafe { lv_dropdown_bind_value(raw(), sub.raw()) }
+        this
+    }
+}
+
+/**
+ * 字符串主题的标签绑定：`lv_label_bind_text` 传 NULL fmt。
+ *
+ * fmt 为 NULL 时 LVGL 对 STRING 主题直接 `lv_label_set_text(target, subject->value.pointer)`
+ * （`lv_label.c:656-685`、`label_text_observer_cb`），不再走 printf ——
+ * 所以文本里出现的 `%` 不会被当成格式符。
+ */
+extend Label {
+    /**
+     * 文本随字符串主题变化（直接贴字符串，不做格式化）。
+     * @param sub 字符串主题
+     * @return this
+     */
+    public func bindText(sub: StringSubject): Label {
+        App.assertUIThread("Label.bindText")
+        unsafe { lv_label_bind_text(raw(), sub.raw(), CPointer<UInt8>()) }
         this
     }
 }

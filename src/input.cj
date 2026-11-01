@@ -125,6 +125,30 @@ public class Input {
     }
 
     /**
+     * 把键盘 / 编码器设备接到一个焦点组上（`lv_indev_set_group`）。
+     *
+     * 只有非指针设备需要：触摸/鼠标点到哪就是哪，键盘则要靠焦点组决定
+     * 「下一个键给谁」。`Group` 销毁时 LVGL 会自动把它从设备上摘掉。
+     * @param g 焦点组
+     * @return this
+     */
+    public func setGroup(g: Group): Input {
+        App.assertUIThread("Input.setGroup")
+        unsafe { lv_indev_set_group(handle, g.raw()) }
+        this
+    }
+
+    /**
+     * 解除设备与焦点组的绑定。
+     * @return this
+     */
+    public func clearGroup(): Input {
+        App.assertUIThread("Input.clearGroup")
+        unsafe { lv_indev_set_group(handle, CPointer<lv_group_t>()) }
+        this
+    }
+
+    /**
      * 最近一次处理的指针设备坐标（轮询式查询，无指针设备时返回 None）。
      * lv_indev_active() 返回上一次处理的输入设备，其 point 为最新读到位置。
      */

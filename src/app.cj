@@ -121,6 +121,7 @@ public class App {
         clearAnimEntries()
         clearSubjectObservers()
         clearDiscoveryCallbacks()
+        clearGroupFocusCbs()
         drainPostedTasks()
         unsafe { lv_deinit() }
         lvglInited = false

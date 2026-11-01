@@ -503,18 +503,115 @@ void lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing)
 /* 数据绑定（subject）                                                 */
 /* ------------------------------------------------------------------ */
 
+/* 字符串主题要自带缓冲（lv_subject_init_string 只存指针、不拷贝），
+ * 把 subject 与两块缓冲打包在一起分配；subject 必须是首成员，
+ * 释放时才能按 type 转回本结构。 */
+typedef struct {
+    lv_subject_t subject;
+    char * value_buf;
+    char * prev_buf;
+} lvglcj_string_subject_t;
+
+static lv_subject_t * subject_alloc(void)
+{
+    return (lv_subject_t *)malloc(sizeof(lv_subject_t));
+}
+
 lv_subject_t * lvglcj_subject_new_int_cjbindwrapper(int32_t value)
 {
-    lv_subject_t * s = (lv_subject_t *)malloc(sizeof(lv_subject_t));
+    lv_subject_t * s = subject_alloc();
     if(s == NULL) return NULL;
     lv_subject_init_int(s, value);
     return s;
 }
 
+lv_subject_t * lvglcj_subject_new_string_cjbindwrapper(const char * value, size_t capacity)
+{
+    if(capacity < 2) capacity = 2;
+    lvglcj_string_subject_t * holder = (lvglcj_string_subject_t *)malloc(sizeof(lvglcj_string_subject_t));
+    if(holder == NULL) return NULL;
+    holder->value_buf = (char *)malloc(capacity);
+    holder->prev_buf  = (char *)malloc(capacity);
+    if(holder->value_buf == NULL || holder->prev_buf == NULL) {
+        free(holder->value_buf);
+        free(holder->prev_buf);
+        free(holder);
+        return NULL;
+    }
+    lv_subject_init_string(&holder->subject, holder->value_buf, holder->prev_buf, capacity,
+                           value != NULL ? value : "");
+    return &holder->subject;
+}
+
+void lvglcj_subject_string_set_cjbindwrapper(lv_subject_t * subject, const char * value)
+{
+    if(subject == NULL) return;
+    /* copy_string 会截断到 capacity-1，并只在值变化时通知 */
+    lv_subject_copy_string(subject, value != NULL ? value : "");
+}
+
+const char * lvglcj_subject_get_string_cjbindwrapper(lv_subject_t * subject)
+{
+    if(subject == NULL) return NULL;
+    return lv_subject_get_string(subject);
+}
+
+lv_subject_t * lvglcj_subject_new_color_cjbindwrapper(uint32_t rgb)
+{
+    lv_subject_t * s = subject_alloc();
+    if(s == NULL) return NULL;
+    lv_subject_init_color(s, lv_color_make((uint8_t)((rgb >> 16) & 0xFF), (uint8_t)((rgb >> 8) & 0xFF),
+                                           (uint8_t)(rgb & 0xFF)));
+    return s;
+}
+
+uint32_t lvglcj_subject_get_color_cjbindwrapper(lv_subject_t * subject)
+{
+    if(subject == NULL) return 0;
+    lv_color_t c = lv_subject_get_color(subject);
+    return ((uint32_t)c.red << 16) | ((uint32_t)c.green << 8) | (uint32_t)c.blue;
+}
+
+void lvglcj_subject_set_color_cjbindwrapper(lv_subject_t * subject, uint32_t rgb)
+{
+    if(subject == NULL) return;
+    lv_subject_set_color(subject, lv_color_make((uint8_t)((rgb >> 16) & 0xFF), (uint8_t)((rgb >> 8) & 0xFF),
+                                                (uint8_t)(rgb & 0xFF)));
+}
+
+lv_subject_t * lvglcj_subject_new_pointer_cjbindwrapper(void * value)
+{
+    lv_subject_t * s = subject_alloc();
+    if(s == NULL) return NULL;
+    lv_subject_init_pointer(s, value);
+    return s;
+}
+
+void lvglcj_subject_set_pointer_cjbindwrapper(lv_subject_t * subject, void * value)
+{
+    if(subject == NULL) return;
+    lv_subject_set_pointer(subject, value);
+}
+
+void * lvglcj_subject_get_pointer_cjbindwrapper(lv_subject_t * subject)
+{
+    if(subject == NULL) return NULL;
+    return (void *)lv_subject_get_pointer(subject);
+}
+
 void lvglcj_subject_free_cjbindwrapper(lv_subject_t * subject)
 {
     if(subject == NULL) return;
-    /* deinit 只清观察者链表，不释放 subject 自身（内存是调用方给的） */
+    /* deinit 只清观察者链表，不释放 subject 自身（内存是调用方给的）；
+     * 先记下类型：deinit 之后按字符串主题回收自带的缓冲。 */
+    lv_subject_type_t type = subject->type;
     lv_subject_deinit(subject);
+    if(type == LV_SUBJECT_TYPE_STRING) {
+        lvglcj_string_subject_t * holder = (lvglcj_string_subject_t *)subject;
+        free(holder->value_buf);
+        free(holder->prev_buf);
+        free(holder);
+        return;
+    }
     free(subject);
 }

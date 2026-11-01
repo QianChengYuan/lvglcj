@@ -147,6 +147,22 @@ void        lvglcj_anim_set_easing_cjbindwrapper(lv_anim_t * a, uint32_t easing)
 lv_subject_t * lvglcj_subject_new_int_cjbindwrapper(int32_t value);
 void           lvglcj_subject_free_cjbindwrapper(lv_subject_t * subject);
 
+/* 字符串主题：init_string 只存指针不拷贝，所以缓冲区必须跟着 subject 一起分配。
+ * capacity 是字节数（含结尾 0），实际可存 capacity-1 个字节。 */
+lv_subject_t * lvglcj_subject_new_string_cjbindwrapper(const char * value, size_t capacity);
+void           lvglcj_subject_string_set_cjbindwrapper(lv_subject_t * subject, const char * value);
+const char *   lvglcj_subject_get_string_cjbindwrapper(lv_subject_t * subject);
+
+/* 颜色主题：值在 C 边界按 0xRRGGBB 打包，避免 lv_color_t 结构体按值跨 FFI 传递 */
+lv_subject_t * lvglcj_subject_new_color_cjbindwrapper(uint32_t rgb);
+uint32_t       lvglcj_subject_get_color_cjbindwrapper(lv_subject_t * subject);
+void           lvglcj_subject_set_color_cjbindwrapper(lv_subject_t * subject, uint32_t rgb);
+
+/* 指针主题：仅传地址，不解引用；调用方自己保证指向的东西还活着 */
+lv_subject_t * lvglcj_subject_new_pointer_cjbindwrapper(void * value);
+void           lvglcj_subject_set_pointer_cjbindwrapper(lv_subject_t * subject, void * value);
+void *         lvglcj_subject_get_pointer_cjbindwrapper(lv_subject_t * subject);
+
 #ifdef __cplusplus
 }
 #endif

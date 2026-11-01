@@ -148,16 +148,18 @@ unsafe { lv_display_set_flush_cb_cjbindwrapper(disp, cjFlushCb) }
 | **UI 线程调度** | `App.post(task)` | 任意线程安全入队，下一轮主循环在 UI 线程执行；每轮最多 256 个任务 |
 | **显示后端** | `Display.drm(card)` / `Display.fbdev(dev)` / `Display.sdl(w,h)` | 三个后端同一接口；自动读取设备真实分辨率与色深，无需手填 |
 | 显示调优 | `Display.setRotation/setColorFormat/setRenderMode/setForceRefresh` | 旋转（软旋转）、色深切换、partial/direct/full 模式、整屏强制刷新 |
+| **顶层浮层** | `Display.top()` / `.sys()` / `.bottom()` | `lv_layer_top/sys/bottom` 的借用视图：通知条、悬浮按钮、HUD 放 top，切屏不会被一起卸载；壁纸放 bottom |
 | **输入** | `Input.evdev(type, dev)` / `Input.discover()` | 触摸/鼠标/键盘；`calibrate(minX,minY,maxX,maxY)`、`swapAxes(true)` 修正坐标错位 |
 | 控件构建 | `Label` / `Button` / `Image` / `Slider` / `Arc` / `Bar` / `Switch` / `Checkbox` / `Dropdown` / `Roller` / `TextArea` / `Keyboard` / `List` / `Table` / `TabView` / `Menu` / `MsgBox` / `Chart` / `Canvas` / `Win` / **`SpanGroup`（富文本混排）** / **`Calendar`** / **`AnimImage`（帧动画）** / **`ImePinyin`（拼音输入法）** | 每个控件一个仓颉 class，链式调用，内部只持 `lv_obj_t` 句柄；`finalize()` 同步删除、`delete()` 异步删除，均幂等 |
 | 事件 | `Widget.onEvent(mask, cb)` / `on(code, cb)` / `onBubbled(code, cb)` | 返回 `EventSubscription`，可 `cancel()`；控件删除时自动回收订阅；`on` 精确过滤单个事件码，`onBubbled` 收子孙冒泡（子控件需 `bubble()`）；`Button.onClick`、`Switch/Checkbox.onChanged`、`Slider.onValueChanged` 提供带类型的快捷订阅 |
-| 样式 | `Style()` | `bgColor/bgOpa/radius/border/pad/textFont/textColor/shadow` 等链式设置，`applyTo(obj, part, state)`；状态样式（PRESSED/CHECKED/DISABLED）与 part 选择器可用；`Widget.setStyle*` 系列是带 `part!/state!` 的一次性 setter |
+| 样式 | `Style()`（`style.cj` + `style_extra.cj`） | 60+ 个链式 setter：`bgColor/bgOpa/radius/border/pad/textFont/textColor/shadow` 打底，另有大纲（`outline*`）、透明度（`opa`/`opaLayered`）、变换（`transformRotation/ScaleX/ScaleY/PivotX/PivotY`、`translateX/Y`）、渐变（`bgGradColor/Dir/Stop`）、线条与弧（`line*`/`arc*`）、文字排版（`textAlign/LetterSpace/LineSpace/Opa/Decor`）、分向 `margin*`/`pad*` 与 `min/maxWidth/Height`；`applyTo(obj, part, state)`；`Widget.setStyle*` 系列是带 `part!/state!` 的一次性 setter |
 | **布局** | `Widget.flex(flow, gap)` / `flexAlign` / `flexGrow`、`Widget.grid(cols, rows)` / `gridAlign` / `place` | flex（含换行、轨道交叉对齐）与 grid（`Fr`/`Px`/`CONTENT` 轨道、跨行跨列）；布局是惰性的，测试读坐标前先 `updateLayout()` |
 | **保活契约** | `Widget.keep / keepOnly / keepBuf(slot)` | 给「LVGL 只存指针」的 API 用：`keep` 追加、`keepOnly` 替换（只影响 `keep` 登记的对象）、`keepBuf` 按槽位接管 malloc 缓冲（grid 用 slot 0/1）；样式与图像描述符由库内部自动登记，其中**样式存在独立的只追加表里，`keepOnly`（换图源/换帧）不会把它清掉** |
 | **动画** | `Anim.create()` + `exec/from/to/duration/easing/repeat/playback/onCompleted` | 值动画（int32）；闭包经 token + 条目表桥接，动画结束自动回收；`Anim.liveCount()` 查泄漏，`Anim.cancelAll()` 一键停 |
 | **时间线** | `Timeline.create()` + `add(anim, at: ms)` / `start` / `setProgress` / `close` | 多段动画按起始时刻排布；`close()` 必须显式调用（LVGL 删除时间线不触发片段回调） |
 | **滚动** | `Widget.scrollBy/scrollTo/scrollToY/scrollToView/scrollX/scrollY` | 长度超出容器即可滚；`scrollBy` 的 dx/dy 是「内容位移」，与 `scrollY()` 反向；`anim: true` 走 LVGL 内部动画 |
-| **数据绑定** | `Subject.of(v)` + `label.bindText(sub)` / `slider·bar·arc·roller·dropdown.bindValue(sub)` / `box.bindFlagIf` / `bindStateIf` / `bindChecked` | int 主题（`lv_subject_init_int`）。声明式绑定零闭包、随控件销毁；`sub.bind(w) {}` 绑控件、控件删即解绑；`sub.subscribe {}` 需 `Observer.cancel()` 或 `Subject.close()`；注册即回调一次，`set` 值不变不通知 |
+| **数据绑定** | `Subject.of(v)` / `StringSubject.of(s, capacity:)` / `ColorSubject.of(rgb)` / `PointerSubject.of(ptr)` + `label.bindText(sub)` / `slider·bar·arc·roller·dropdown.bindValue(sub)` / `box.bindFlagIf` / `bindStateIf` / `bindChecked` | 四种值形态：int / string / color（`0xRRGGBB`）/ pointer。声明式绑定零闭包、随控件销毁；`sub.bind(w) {}` 绑控件、控件删即解绑；`sub.subscribe {}` 需 `Observer.cancel()` 或 `Subject.close()`；注册即回调一次，`set` 值不变不通知。string 主题的 `capacity` 是**字节数含结尾 0**，写超静默截断 |
+| **焦点组** | `Group.of()` / `add(w)` / `remove(w)` / `focus(w)` / `focusNext()` / `onFocus {}` + `Input.setGroup(g)` | 键盘/编码器导航的 `lv_group` 封装：`wrap`/`editing`/`freeze` 开关、`focused()` 取当前焦点控件、`setDefault()` 设为全局默认组；组与控件谁先删都安全 |
 | **像素/图像** | `ImageBuffer(w, h, cf)` | 申请并持有一块 LVGL 可直接消费的像素缓冲；`toImageDsc()` 生成 `lv_image_dsc_t`（自动填 `magic`/`cf`/`w`/`h`/`stride`/`data_size`）；`writePixels(bytes)` 从仓颉 `Array<UInt8>` 拷入 |
 | **图片文件** | `Image.fromFile(parent, path)` | PNG（内置 lodepng + STDIO 文件系统），C 垫片负责补 `A:` 驱动器前缀；路径不存在抛 `LvglException` |
 | 色彩工具 | `Color.rgb565(r,g,b)` / `Color.argb8888(...)` | 产出与目标 `LV_COLOR_FORMAT` 匹配的字面量，避免手写移位出错 |
@@ -371,6 +373,7 @@ lvglcj/
 │   ├── ffi_layout.cj          # FFI：flex / grid 布局 + 轨道常量
 │   ├── ffi_anim.cj            # FFI：lv_anim / timeline / 滚动 + 方向与滚动条常量
 │   ├── ffi_subject.cj         # FFI：lv_subject / lv_observer + 声明式绑定族
+│   ├── ffi_group.cj           # FFI：lv_group（焦点组）
 │   ├── util.cj                # 友好 API：版本/颜色/异常/内存诊断
 │   ├── app.cj                 # 友好 API：App 生命周期、主循环、tick、定时器
 │   ├── display.cj             # 友好 API：Display（DRM/fbdev/SDL）+ 渲染模式/旋转
@@ -382,8 +385,10 @@ lvglcj/
 │   ├── widget_rich.cj         # 友好 API：富文本 span / 日历 / 帧动画 / 拼音输入法
 │   ├── layout.cj              # 友好 API：flex / grid 布局（extend Widget）
 │   ├── anim.cj                # 友好 API：Anim / Timeline / 滚动（extend Widget）
-│   ├── subject.cj             # 友好 API：Subject / Observer + 声明式绑定（extend 控件）
+│   ├── subject.cj             # 友好 API：Subject / String·Color·PointerSubject + 声明式绑定
+│   ├── group.cj               # 友好 API：Group（焦点组，键盘/编码器导航）
 │   ├── style.cj               # 友好 API：Style / Theme / Font（含 FreeType 字体加载）
+│   ├── style_extra.cj         # 友好 API：Style 扩充属性（outline/transform/line/arc/grad…）
 │   ├── image.cj               # 友好 API：ImageBuffer / ImageDsc / Canvas
 │   └── test/                  # 单元测试（package lvglcj.test，cjpm test 发现）
 │       ├── test_support_test.cj   # 幂等 lv_init 辅助 + 冒烟用例
@@ -593,8 +598,9 @@ export LVGLCJ_LIB_DIR=lib/linux-x64
 cjpm test
 ```
 
-实测结果（Windows / WSL，2026-10）：**100 个用例，44 passed / 56 skipped / 0 failed**；
-加上 `--include-tags=requires_display --exclude-tags=notag` 后 **56 passed / 44 skipped / 0 failed**（需要窗口的用例全部 passed）
+实测结果（Windows / WSL，2026-11）：**121 个用例，57 passed / 64 skipped / 0 failed**；
+加上 `--include-tags=requires_display --exclude-tags=notag` 后 **62 passed / 57 skipped / 0 failed**
+（两轮互补，121 条全部真跑过）
 （默认自动切到 `SDL_VIDEODRIVER=dummy`，在内存里渲染、**不弹窗口**；想看画面加 `LVGLCJ_TEST_REAL_WINDOW=1`）。
 
 | 测试文件 | 覆盖 | 是否依赖窗口 |
@@ -609,6 +615,9 @@ cjpm test
 | `keepalive_test.cj` | **try-with-resources 自动释放**、`close()` 幂等、借用视图 `close()` 静默、同一 `Style` 挂多控件删其一不影响其余、**泄漏追踪计数随生命周期变化**、`Line` 缓冲随控件释放 | **是**，打 `@Tag[requires_display]` |
 | `layout_test.cj` | **flex**：横排/竖排顺序、`gap`、`flexGrow` 分剩余、`SPACE_BETWEEN`、`ROW_WRAP` 换行、`trackCross` 的垂直居中语义；**grid**：`Fr` 权重（1:2 → 100/200）、`Px` 行高、`colSpan` 跨列、列/行描述符双槽保活。全部是 `updateLayout()` 后的坐标真断言 | **是**，打 `@Tag[requires_display]` |
 | `anim_test.cj` | 动画跑到底值正确 + 条目自动回收、`cancel` 幂等且不残留、`onCompleted` 只触发一次、缺 `exec` 抛异常；时间线两段按时序播放、`playTime()`、`close()` 后条目归零；滚动 `scrollTo`/`scrollBy`（**钉死 dy 与 `scrollY()` 反向**）、越界钳制、`SCROLLABLE` flag 不拦程序化滚动 | **是**，打 `@Tag[requires_display]` |
+| `subject_variant_test.cj` | `StringSubject`（容量截断、UTF-8、注册即回调、`close()` 后读空串）、`ColorSubject`（`0xRRGGBB` 进出、`notify()`）、`PointerSubject`（只搬地址、`close()` 后空指针）、`Label.bindText(StringSubject)`（`fmt = NULL` 直接贴字符串） | string/color/pointer 部分**否**，绑定部分打 `@Tag[requires_display]` |
+| `group_test.cj` | `Group` 建/关/幂等、`wrap`（默认 `true`）/`editing`/`freeze`、关后再用抛异常、空组导航安全；焦点回调、组与控件两种删除顺序都不崩 | 组本身**否**，焦点部分打 `@Tag[requires_display]` |
+| `style_extra_test.cj` | 49 个扩充 setter 全部调一遍（FFI 签名/类型回归）、`minWidth/minHeight` 生效、`Widget.setStyle*`；`Display.top()/sys()/bottom()` 可加子控件、借用视图 `close()` 静默、`Display.defaultDisplay()` | 样式部分**否**，应用与浮层部分打 `@Tag[requires_display]` |
 | `subject_test.cj` | 主题读写 / `previous()`、**值不变不通知**、范围钳制、`add` 越界不抛溢出、订阅**注册即回调**、`cancel` 幂等且条目回落、`close()` 清空全部订阅；绑定侧：声明式 flag 绑定生效且**不占条目表**、`bind` 在控件删除后自动解绑、`bindText` 的 fmt 串保活（主题先释放也不悬垂） | 主题部分**否**，绑定部分打 `@Tag[requires_display]` |
 
 需要 display 的用例默认被 `[profile.test].exclude-tags` 排除（本地不弹窗、无图形环境不报错）。
@@ -698,7 +707,9 @@ lvglcj = { path = ".." }
 | `display.cj` | `Display.sdl(w,h)` / `.drm()` / `.fbdev()`；`screen()`；`setRotation` / `setColorFormat` / `setForceRefresh` | 三种后端；默认参数只能按名字传（`Display.drm(card: "...")`） |
 | `input.cj` | `Input.evdev(...)` / `Input.discover()`；`attach()` / `calibrate()` / `swapAxes()` / `setCursor()` | evdev 输入（触摸/鼠标/键盘） |
 | `widget*.cj` | `Container(parent)` 打底，其余控件同名构造；`onEvent/offEvent`；`finalize()/delete()` | 控件（事件、标志、状态、释放） |
-| `style.cj` | `Style()` 链式 + `applyTo(obj)`；`Theme.default(...)`；`Font.montserrat/load/trySystemCjk` | 样式、主题、字体（中文必须 FreeType） |
+| `style.cj` / `style_extra.cj` | `Style()` 链式 + `applyTo(obj)`；`Theme.default(...)`；`Font.montserrat/load/trySystemCjk` | 样式、主题、字体（中文必须 FreeType）；扩充属性单独一个文件，避免主文件过长 |
+| `subject.cj` | `Subject` / `StringSubject` / `ColorSubject` / `PointerSubject`；`bindText` / `bindValue` / `bindFlagIf` | 数据绑定（四种值形态） |
+| `group.cj` | `Group.of()` / `add` / `remove` / `focus` / `focusNext` / `onFocus` / `setDefault` | 焦点组（键盘与编码器导航） |
 | `image.cj` | `ImageBuffer(w,h,cf)` → `toImageDsc()` → `Image.setSource`；`Canvas(w,h)` | 像素缓冲、图像源、画布 |
 
 三处最容易踩的：

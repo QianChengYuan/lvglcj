@@ -53,8 +53,16 @@ foreign func lv_screen_load(scr: CPointer<lv_obj_t>): Unit
 
 foreign func lv_screen_active(): CPointer<lv_obj_t>
 
-/* ---- 层（lv_layer_top 用于光标/悬浮元素，始终在 screen 内容之上） ---- */
+/* ---- 层 ----
+ * top  = 在 screen 内容之上（光标、悬浮按钮、通知条）
+ * sys  = 在 top 之上（系统级弹层，一般不要往里塞普通控件）
+ * bottom = 在 screen 内容之下（壁纸）
+ */
 foreign func lv_layer_top(): CPointer<lv_obj_t>
+
+foreign func lv_layer_sys(): CPointer<lv_obj_t>
+
+foreign func lv_layer_bottom(): CPointer<lv_obj_t>
 
 /* ---- 屏幕刷新定时器（拿到后可用 lv_timer_set_period 调刷新率） ---- */
 foreign func lv_display_get_refr_timer(disp: CPointer<lv_display_t>): CPointer<lv_timer_t>

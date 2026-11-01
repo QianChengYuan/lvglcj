@@ -13,6 +13,7 @@
 - [6. style.cj —— 样式 / 字体 / 主题](#6-stylecj--样式--字体--主题)
 - [7. image.cj —— 像素缓冲 / 图像 / 画布](#7-imagecj--像素缓冲--图像--画布)
 - [8. subject.cj —— 数据绑定（Subject / Observer）](#8-subjectcj--数据绑定subject--observer)
+- [8.5 group.cj —— 焦点组（键盘 / 编码器导航）](#85-groupcj--焦点组键盘--编码器导航)
 - [9. 常量速查](#9-常量速查)
 - [10. 边界与限制](#10-边界与限制)
 
@@ -333,6 +334,25 @@ main() {
 | `height()` | `Int32` | 实际纵向分辨率 |
 | `colorDepth()` | `UInt32` | 当前色深（位），由 color format 决定 |
 | `screen()` | `Screen` | 当前活动屏幕，可作为控件 parent |
+| `Display.defaultDisplay()` | `?Display` | 当前默认 display 的借用视图；多屏时是最后创建的那个，未初始化返回 `None` |
+
+### 顶层浮层
+
+| 方法 | 对应 C | 用途 |
+|---|---|---|
+| `top(): Widget` | `lv_layer_top` | 在屏幕内容之上、不随切屏卸载：通知条、悬浮按钮、调试 HUD、模态遮罩 |
+| `sys(): Widget` | `lv_layer_sys` | 比 top 更靠上；LVGL 自己也往里放东西（如 msgbox 遮罩），一般只放「必须压住一切」的自绘提示 |
+| `bottom(): Widget` | `lv_layer_bottom` | 屏幕内容之下：壁纸 / 底图 |
+
+```cangjie
+let d = Display.sdl(800, 480)
+let hud = Container(d.top())      // 借用视图：可以往里加控件
+hud.align(LV_ALIGN_TOP_RIGHT, -8, 8).size(120, 32)
+// 不要对 d.top() 调 delete()/finalize() —— 层由 LVGL 持有
+```
+
+> `top()` 拿到的是**借用视图**（`owned: false`）：`close()` 会静默返回、不置 closed；
+> 想清空浮层就删掉自己加进去的子控件。
 
 ### 调优
 
@@ -828,6 +848,32 @@ Style().bgColor(0x9E, 0x9E, 0x9E).applyTo(btn, state: LV_STATE_DISABLED)
 Style().textColor(0xFF, 0xFF, 0xFF).applyTo(btn, state: LV_STATE_CHECKED | LV_STATE_PRESSED)
 ```
 
+### 扩充属性（`style_extra.cj`）
+
+`style.cj` 只留最常用的 11 个 setter，其余 **49 个**放在 `style_extra.cj`（同样链式，`extend Style`），
+避免主文件无限膨胀；两个文件对调用方没有区别。
+
+| 分类 | `Style` 链式方法 |
+|---|---|
+| 渐变 | `bgGradColor(r,g,b)`、`bgGradDir(dir)`、`bgGradStop(v: UInt8)` |
+| 边框 / 大纲 | `borderOpa(v)`、`borderSide(side)`、`outlineWidth(w)`、`outlineColor(r,g,b)`、`outlineOpa(v)`、`outlinePad(v)` |
+| 透明度 | `opa(v: UInt8)`、`opaLayered(v: UInt8)` |
+| 阴影 | `shadowColor(r,g,b)`、`shadowOffsetX(v)`、`shadowOffsetY(v)`、`shadowSpread(v)` |
+| 文本 | `textAlign(align)`、`textLetterSpace(v)`、`textLineSpace(v)`、`textOpa(v)`、`textDecor(decor)` |
+| 图像 | `imageRecolor(r,g,b)`、`imageRecolorOpa(v)`、`imageOpa(v)` |
+| 线条 / 弧 | `lineWidth(w)`、`lineColor(r,g,b)`、`lineOpa(v)`、`lineRounded(on)`、`arcWidth(w)`、`arcColor(r,g,b)`、`arcOpa(v)`、`arcRounded(on)` |
+| 变换 | `transformRotation(v)`、`transformScaleX(v)`、`transformScaleY(v)`、`transformPivotX(v)`、`transformPivotY(v)`、`translateX(v)`、`translateY(v)` |
+| 间距 / 尺寸 | `marginTop/Right/Bottom/Left(v)`、`padTop/Right/Bottom/Left(v)`、`minWidth/minHeight/maxWidth/maxHeight(v)`、`marginAll(v)`、`padEach(top, right, bottom, left)` |
+
+> 单位沿用 LVGL：**旋转是 0.1 度**（`transformRotation(450)` = 45°），**缩放是 1/256**
+> （`transformScaleX(256)` = 1.0×），其余为像素。颜色分量都是 `UInt8`。
+>
+> 控件侧有对应的 `Widget.setStyle<Pascal>(..., part!: UInt32 = LV_PART_MAIN, state!: UInt32 = LV_STATE_DEFAULT)`；
+> 但 `padTop/Right/Bottom/Left` 在 `widget.cj` 里早就有（`setStylePadTop` 等），不重复生成。
+
+配套常量：`LV_GRAD_DIR_NONE/VER/HOR`、`LV_BORDER_SIDE_NONE/TOP/BOTTOM/LEFT/RIGHT/FULL`、
+`LV_TEXT_DECOR_NONE/UNDERLINE/STRIKETHROUGH`。
+
 ### `Font`
 
 | 方法 | 说明 |
@@ -967,8 +1013,18 @@ cv.setPx(10, 100, 0xFF, 0, 0)
 
 ## 8. subject.cj —— 数据绑定（`Subject` / `Observer`）
 
-LVGL 9 的 subject 是「一份值 + 一串观察者」。本库目前只做 **int 主题**（`lv_subject_init_int`），
-覆盖进度、温度、计数这类场景；float / string / pointer 主题尚未封装。
+LVGL 9 的 subject 是「一份值 + 一串观察者」。本库封装了 **int / string / color / pointer** 四种值形态：
+
+| 类 | 底层 | 值类型 | 典型场景 |
+|---|---|---|---|
+| `Subject` | `lv_subject_init_int` | `Int32` | 进度、温度、计数（支持 `setRange` 钳位与 `add`） |
+| `StringSubject` | `lv_subject_init_string` | `String` | 状态文案、设备名、日志行（`capacity` 决定缓冲区大小） |
+| `ColorSubject` | `lv_subject_init_color` | `UInt32`（`0xRRGGBB`） | 主题色联动、指示灯颜色 |
+| `PointerSubject` | `lv_subject_init_pointer` | `CPointer<Unit>` | 把任意 C 对象挂到模型上（LVGL 只搬地址，不解引用） |
+
+> **float 主题没有封装**：`lv_subject_init_float` 整段被 `#if LV_USE_FLOAT` 包住，而三份 `lv_conf.h`
+> 都显式设了 `LV_USE_FLOAT 0` —— 打开它会同时改变 `lv_anim_t` 的数值类型与 `lv_point_precise_t`
+> （`Line.setPoints` 的 FFI 会静默画错）。要浮点就用 int 主题 + 自己换算（例如 `0.1°C` 为单位）。
 
 三种用法，按省事程度排序：
 
@@ -992,6 +1048,34 @@ LVGL 9 的 subject 是「一份值 + 一串观察者」。本库目前只做 **i
 | `bind(w: Widget, cb: (Int32) -> Unit): Observer` | 绑到控件，控件删除时自动解绑，注册时同样立即回调一次 |
 | `isClosed()` / `close()` | 是否已释放 / 释放（幂等） |
 | `Subject.liveCount(): Int64` | 当前登记的**带闭包**观察者数（泄漏排查；声明式绑定不计） |
+
+### `StringSubject` / `ColorSubject` / `PointerSubject`
+
+三个类的方法形状与 `Subject` 一致（`of/get/set/subscribe/bind/notify/isClosed/close/raw`），差异只在类型：
+
+| 类 | 工厂 | 读 | 写 | 备注 |
+|---|---|---|---|---|
+| `StringSubject` | `of(initial: String, capacity!: Int64 = 128)` | `get(): String` | `set(v: String)` | `capacity` 是**字节数、含结尾 `\0`**；汉字 UTF-8 占 3 字节，写超按 LVGL 语义**静默截断**到 `capacity-1` 字节；`capacity < 2` 会被钳成 2 |
+| `ColorSubject` | `of(initial: UInt32)` | `get(): UInt32` | `set(rgb: UInt32)` | 值按 `0xRRGGBB` 打包（与 `Color.rgb565` 那些字面量不同，这里不是像素格式） |
+| `PointerSubject` | `of(initial: CPointer<Unit>)` | `get(): CPointer<Unit>` | `set(p: CPointer<Unit>)` | **不解引用、不释放**，生命周期完全由调用方负责 |
+
+已释放后的读操作同样宽容：`get()` 分别返回 `""` / `0` / 空指针；写操作抛 `LvglException`。
+
+```cangjie
+let status = StringSubject.of("就绪", capacity: 64)   // 64 字节 ≈ 21 个汉字
+status.subscribe { s => println("状态：${s}") }
+status.set("正在同步…")
+
+let tint = ColorSubject.of(0x2196F3)
+box.bindFlagIf(Subject.of(1), LV_OBJ_FLAG_HIDDEN, 0)   // 其它绑定照旧
+
+let label = Label(screen())
+label.bindText(status)        // 重载：fmt 传 NULL，直接把字符串贴到标签
+```
+
+> `Label.bindText` 有两个重载：`bindText(sub: Subject, fmt!: String = "%d")` 与
+> `bindText(sub: StringSubject)`。后者不带 `fmt` —— LVGL 在 `fmt == NULL` 且值是字符串时
+> 走 `lv_label_set_text(target, subject->value.pointer)`，`%` 不会被当格式符。
 
 ### `Observer`
 
@@ -1027,6 +1111,43 @@ temp.close()                    // 页面销毁时；控件还在也不会悬垂
 > 因此没有「忘记 cancel」的问题。
 
 ---
+
+## 8.5 group.cj —— 焦点组（键盘 / 编码器导航）
+
+`lv_group` 决定「按 Tab / 方向键 / 编码器旋钮时，焦点在哪些控件之间移动」。触屏项目用不到，
+但只要接了键盘、旋钮（`LV_INDEV_TYPE_ENCODER`）或想让 Tab 键可用，就必须建组。
+
+| 方法 | 说明 |
+|---|---|
+| `Group.of(): Group` | 新建组（`lv_group_create`），失败抛 `LvglException` |
+| `Group.defaultGroup(): ?Group` | 全局默认组（`lv_group_get_default`），没有时返回 `None` |
+| `setDefault(): Group` | 设为全局默认组（之后新建的 indev 会默认用它） |
+| `add(w: Widget)` / `remove(w: Widget)` / `clear()` | 加入 / 移出 / 清空成员 |
+| `focus(w)` / `focusNext()` / `focusPrev()` | 指定焦点 / 下一个 / 上一个 |
+| `focused(): ?Widget` | 当前焦点控件的**借用视图**；没有焦点返回 `None` |
+| `objAt(index: UInt32): ?Widget` | 按下标取成员（借用视图），越界返回 `None` |
+| `onFocus(cb: (Option<Widget>) -> Unit)` | 焦点变化回调；焦点落到空处时参数是 `None`（`LV_EVENT_FOCUSED` 的值来自 `lv_group_get_focused`） |
+| `setWrap(on: Bool)` / `wrap(): Bool` | 走到头是否循环。**默认是 `true`**（`lv_group_create` 里写死 `group->wrap = 1`） |
+| `setEditing(on: Bool)` / `editing(): Bool` | 编辑态（编码器按下进入控件内部编辑） |
+| `freeze(on: Bool)` | 冻结焦点（`lv_group_focus_freeze`），用于弹窗期间锁住背景 |
+| `setUserData(p: CPointer<Unit>)` / `userData()` | 挂自定义数据 |
+| `isClosed()` / `close()` | 是否已释放 / 释放（幂等） |
+
+配合 `Input` 使用：
+
+```cangjie
+let g = Group.of()
+g.add(btnA).add(btnB).add(slider)
+g.onFocus { w => println(w.isNone() ? "无焦点" : "焦点切换") }
+keyboardIndev.setGroup(g)     // Input.setGroup(g)
+// 退出时：先 Group.close() 或先删控件都可以
+```
+
+> **删除顺序**：`lv_group_delete` 会给当前焦点控件发 `LV_EVENT_DEFOCUSED`、从所有 indev 上摘掉自己，
+> 若是默认组还会清空默认指针；反之先删控件再删组，组内部会自己把失效成员摘掉。
+> 两种顺序都有回归用例（`group_test.cj`）。
+>
+> **没有终结器**：`close()` 要显式调用（删除组会动 LVGL 链表，不能跑在 GC 线程）。
 
 ## 9. 常量速查
 
@@ -1073,6 +1194,14 @@ temp.close()                    // 页面销毁时；控件还在也不会悬垂
 ### 颜色格式 `LV_COLOR_FORMAT_*`
 
 `RGB565`(0x12)、`RGB565_SWAPPED`(0x1B)、`RGB888`(0x0F)、`XRGB8888`(0x11)、`ARGB8888`(0x10)、`L8`(0x06)、`I1`(0x07)、`I8`(0x0A)
+
+### 渐变 / 边框侧 / 文本装饰
+
+| 名称 | 值 | 说明 |
+|---|---|---|
+| `LV_GRAD_DIR_NONE/VER/HOR` | 0/1/2 | 渐变方向 |
+| `LV_BORDER_SIDE_NONE/TOP/BOTTOM/LEFT/RIGHT/FULL` | 0x00/0x02/0x01/0x04/0x08/0x0F | 边框画在哪几边（`FULL`=0x0F） |
+| `LV_TEXT_DECOR_NONE/UNDERLINE/STRIKETHROUGH` | 0/1/2 | 文字装饰（可 `\|` 组合） |
 
 ### 其它
 

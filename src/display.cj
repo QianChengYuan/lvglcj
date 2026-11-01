@@ -28,6 +28,22 @@ public class Display {
         this.handle = handle
     }
 
+    /**
+     * 当前默认 display（`lv_display_get_default`）。
+     *
+     * 多屏场景下是「最后创建的那个」；只想拿到已经建好的屏幕、又不想自己保存
+     * `Display` 引用时用它。未初始化 / 没有 display 时返回 `None`。
+     * @return 默认 display 的借用视图
+     */
+    public static func defaultDisplay(): ?Display {
+        let p = unsafe { lv_display_get_default() }
+        if (p.isNull()) {
+            None
+        } else {
+            Some(Display(p))
+        }
+    }
+
     /* ==================== 三个后端 ==================== */
 
     /**
@@ -123,6 +139,41 @@ public class Display {
     /** 当前活动屏幕 */
     public func screen(): Screen {
         Screen(unsafe { lv_display_get_screen_active(handle) })
+    }
+
+    /* ==================== 顶层浮层（不随屏幕切换消失） ==================== */
+
+    /**
+     * 内容层之上的浮层（`lv_layer_top`）。
+     *
+     * 适合放「跨页面存在」的东西：通知条、悬浮按钮、调试 HUD、模态遮罩。
+     * 它不属于任何屏幕，切屏时不会被一起卸载 —— 这正是它和 `screen()` 的区别。
+     *
+     * 返回的是**借用视图**（`owned: false`，层由 LVGL 持有）：可以往里加子控件，
+     * 但不要对它调 `delete()` / `finalize()`。
+     * @return top 层
+     */
+    public func top(): Widget {
+        Widget(unsafe { lv_layer_top() }, owned: false)
+    }
+
+    /**
+     * 系统层（`lv_layer_sys`），位于 top 层之上。
+     *
+     * LVGL 自己也会往这里放东西（如 msgbox 的遮罩），一般不要往里塞普通控件，
+     * 留给「必须压住一切」的自绘提示。
+     * @return sys 层
+     */
+    public func sys(): Widget {
+        Widget(unsafe { lv_layer_sys() }, owned: false)
+    }
+
+    /**
+     * 背景层（`lv_layer_bottom`），位于 screen 内容之下 —— 放壁纸/底图。
+     * @return bottom 层
+     */
+    public func bottom(): Widget {
+        Widget(unsafe { lv_layer_bottom() }, owned: false)
     }
 
     /* ==================== 调优 ==================== */
