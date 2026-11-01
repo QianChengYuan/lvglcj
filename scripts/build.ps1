@@ -10,7 +10,14 @@
 #   ./scripts/build.ps1 -Examples           # 库 + examples（--cfg）
 #   ./scripts/build.ps1 -Test               # 库 + 单元测试
 #   ./scripts/build.ps1 -LibDir lib/linux-x64
+#   ./scripts/build.ps1 -Target aarch64-unknown-linux-gnu -Backend sdl   # 按目标三元组选库
 #   ./scripts/build.ps1 -NoMsys2Path        # 不自动把 MSYS2 UCRT64 加进 PATH
+#
+# 目标三元组 → 预编译库（与 -Target 一起用时生效，仍可用 -LibDir 手动覆盖）：
+#   x86_64-w64-mingw32           → lib/windows-x64
+#   x86_64-unknown-linux-gnu     → lib/linux-x64
+#   aarch64-unknown-linux-gnu    → lib/linux-arm64-sdl（-Backend drm 时用 lib/linux-arm64）
+#   aarch64-apple-darwin         → lib/macos-arm64
 #
 # 说明：
 # - 已有的 $env:LVGLCJ_LIB_DIR 会被沿用（显式传 -LibDir 可覆盖）；两者都没有才按平台猜。
@@ -23,8 +30,12 @@
 
 [CmdletBinding()]
 param(
-    # 预编译静态库目录（默认：已有环境变量 > 按平台猜）
+    # 预编译静态库目录（默认：-Target 映射 > 已有环境变量 > 按平台猜）
     [string]$LibDir = "",
+    # 目标三元组（交叉编译用，如 aarch64-unknown-linux-gnu）；同时决定 lib 目录
+    [string]$Target = "",
+    # aarch64 用哪个后端产物：sdl（默认，桌面）| drm（tty 独占）
+    [string]$Backend = "sdl",
     # 同时构建 examples（cjpm build --cfg）
     [switch]$Examples,
     # release 构建
@@ -56,9 +67,29 @@ function Resolve-DefaultLibDir {
     return "lib/linux-x64"
 }
 
-# 1) 决定库目录：显式参数 > 环境变量 > 平台猜测
+# 按目标三元组映射到预编译库目录。cjpm 1.2.0 **不支持** [target.<triple>.ffi.c]
+# （实测被忽略，仍读全局 [ffi.c]），所以三元组 → 库目录只能由脚本做。
+function Resolve-LibDirForTarget([string]$triple, [string]$backend) {
+    switch ($triple) {
+        "x86_64-w64-mingw32" { return "lib/windows-x64" }
+        "x86_64-unknown-linux-gnu" { return "lib/linux-x64" }
+        "aarch64-unknown-linux-gnu" {
+            if ($backend -eq "drm") { return "lib/linux-arm64" }
+            return "lib/linux-arm64-sdl"
+        }
+        "aarch64-apple-darwin" { return "lib/macos-arm64" }
+        "x86_64-apple-darwin" { return "lib/macos-x64" }
+        default {
+            throw "未知目标三元组 '$triple'。可用：x86_64-w64-mingw32 / x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu / aarch64-apple-darwin"
+        }
+    }
+}
+
+# 1) 决定库目录：-LibDir > -Target 映射 > 环境变量 > 平台猜测
 if ($LibDir -ne "") {
     $libDir = $LibDir
+} elseif ($Target -ne "") {
+    $libDir = Resolve-LibDirForTarget $Target $Backend
 } elseif ($env:LVGLCJ_LIB_DIR) {
     $libDir = $env:LVGLCJ_LIB_DIR
 } else {
@@ -94,8 +125,38 @@ if (-not $NoMsys2Path -and $env:OS -eq "Windows_NT") {
 }
 
 # 4) 构建
+# 目标三元组与宿主一致时不必传 --target（cjpm 会打一条 "will be ignored" 的告警）
+$hostTriple = if ($env:OS -eq "Windows_NT") {
+    "x86_64-w64-mingw32"
+} elseif ($IsMacOS) {
+    if ((& uname -m).Trim() -eq "arm64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" }
+} else {
+    $m = (& uname -m).Trim()
+    if ($m -eq "aarch64" -or $m -eq "arm64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" }
+}
+
+# cjc 交叉编译要有对应平台的 stdlib 模块（$env:CANGJIE_HOME/modules/<arch>_<os>_cjnative），
+# 官方 SDK 只带 linux_x86_64 / windows_x86_64；缺 aarch64 时 cjc 会报
+#   error: failed to detect cangjie modules, reason: target library path is not exist
+function Test-TargetModules([string]$triple) {
+    $mod = switch ($triple) {
+        "aarch64-unknown-linux-gnu" { "linux_aarch64_cjnative" }
+        "x86_64-unknown-linux-gnu" { "linux_x86_64_cjnative" }
+        "x86_64-w64-mingw32" { "windows_x86_64_cjnative" }
+        default { "" }
+    }
+    if ($mod -eq "" -or -not $env:CANGJIE_HOME) { return }
+    if (-not (Test-Path (Join-Path $env:CANGJIE_HOME "modules/$mod"))) {
+        Write-Host "[build] 警告：$env:CANGJIE_HOME/modules/$mod 不存在，cjc 交叉编译会失败；需要带目标平台 stdlib 模块的 SDK" -ForegroundColor Yellow
+    }
+}
+
 $cjpmArgs = @("build")
 if ($Release) { $cjpmArgs += "--release" }
+if ($Target -ne "" -and $Target -ne $hostTriple) {
+    Test-TargetModules $Target
+    $cjpmArgs += "--target"; $cjpmArgs += $Target
+}
 Write-Host "==> cjpm $($cjpmArgs -join ' ')"
 & cjpm @cjpmArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -105,7 +166,7 @@ if ($Examples) {
     # 交给 build-example.ps1：它除了 cjpm build --cfg，还会把 SDL2/FreeType/
     # libstdc++/libwinpthread 与仓颉运行时的 DLL 拷到产物目录，省去运行前改 PATH。
     Write-Host "==> examples: build-example.ps1"
-    & (Join-Path $PSScriptRoot "build-example.ps1") -LibDir $libDir
+    & (Join-Path $PSScriptRoot "build-example.ps1") -LibDir $libDir -Target $Target -Backend $Backend
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

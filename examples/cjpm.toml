@@ -20,7 +20,9 @@ lvglcj = { path = ".." }
 # （cjpm 1.2.0 的键名只接受 cfg / cfg_1 / cfg_2 …，且 --cfg 只匹配字面量 cfg）
 cfg = "--cfg=\"lv_backend=sdl\""
 
-# 交叉到 Pi（aarch64 + SDL 后端）：
+# 交叉到 Pi（aarch64 + SDL 后端）——库目录可交给脚本按三元组选：
+#   ./scripts/build-example.sh --target aarch64-unknown-linux-gnu --backend sdl
+# 手工等价：
 #   export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl
 #   export LVGLCJ_AARCH64_SDL_LIB=/root/aarch64-sdl/lib
 #   cjpm build --target aarch64-unknown-linux-gnu --cfg

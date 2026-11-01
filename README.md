@@ -518,17 +518,23 @@ cd examples && cjpm build --cfg
 2. **关掉 Windows PATH 注入**：`/etc/wsl.conf` 里写 `[interop] appendWindowsPath = false`，否则 `cjc` / `ninja` 会跑到 Windows 程序上；
 3. **中文显示**：不装 `fonts-noto-cjk` 时 `Font.trySystemCjk()` 落空，界面方框（内置子集只有 1338 字）。
 
-> **仓颉侧交叉不需要单独的 aarch64 SDK**：linux-x64 的 `cjc` 支持 `--target aarch64-unknown-linux-gnu`，
-> 只要 `--sysroot` 指向 aarch64 的 glibc/crt 并加 `--static`（把仓颉运行时静态链进可执行文件），
-> 产物就能直接在 Pi 上跑。`examples/cjpm.toml` 的 `[target.aarch64-unknown-linux-gnu]` 已经写好
-> 这三项参数，照下面的命令做即可。若链接报 `Scrt1.o`/`crti.o` 找不到，就是 sysroot 没指对
-> （cjc 没有 gcc 的 `-B`）。完整说明与退路（qemu / Pi 原生编译）见 `docs/build-guide.md` 4.5。
+> **仓颉侧交叉的前提**：`cjc` 支持 `--target aarch64-unknown-linux-gnu`，但需要 SDK 自带目标平台的
+> stdlib 模块——用 `ls $CANGJIE_HOME/modules` 自查，必须有 `linux_aarch64_cjnative`。官方 linux-x64
+> 安装包**不一定**带它；缺了就会报 `failed to detect cangjie modules, reason: target library path
+> is not exist`，此时只能改用带 aarch64 模块的 SDK，或在 Pi 上原生 `cjpm build`（慢但零坑）。
+> 模块齐全时，再按 `examples/cjpm.toml` 里 `[target.aarch64-unknown-linux-gnu]` 的 `--sysroot` + `--static`
+> 走；链接报 `Scrt1.o`/`crti.o` 找不到就是 sysroot 没指对（cjc 没有 gcc 的 `-B`）。详见 `docs/build-guide.md` 4.5。
 
 ### 构建 + 部署到 Pi
 
 **前置**：C 库已就绪（`scripts/build-lvgl-pi-sdl.sh` → `lib/linux-arm64-sdl/`，桌面里跑 SDL 版；
-tty 独占才用 `scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`）。**不需要 aarch64 版仓颉 SDK**，
-用 WSL 里的 linux-x64 SDK 交叉即可。
+tty 独占才用 `scripts/build-lvgl-pi.sh` → `lib/linux-arm64/`）。仓颉侧交叉还要求 SDK 带
+`modules/linux_aarch64_cjnative`（`ls $CANGJIE_HOME/modules` 自查）；没有就只能在 Pi 上原生编译。
+目标三元组与库目录的对应关系由脚本维护，可以直接交给脚本：
+
+```bash
+./scripts/build.sh --target aarch64-unknown-linux-gnu --backend sdl
+```
 
 ```bash
 # 用 linux-x64 SDK（WSL 里正常安装的那份）

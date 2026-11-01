@@ -109,6 +109,38 @@ $env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH   # 或把 DLL 拷到 exe 同目
 > `libboundscheck.dll`、`libcangjie-runtime.dll`。缺任意一个都会启动即失败。
 > `build-example.ps1` 会把这 7 个 DLL 全部拷进 `examples/target/release/bin/`，之后双击即可运行。
 
+### 2.4 用目标三元组选库（推荐）
+
+`cjpm.toml` 的 `[ffi.c]` 只能写一个路径，而仓库有四份互不兼容的预编译库。cjpm 1.2.0
+**不支持** `[target.<triple>.ffi.c]`（实测该段被忽略，仍读全局 `[ffi.c]`），所以「三元组 →
+库目录」的映射放在脚本里：
+
+| 目标三元组 | 库目录 | 说明 |
+| --- | --- | --- |
+| `x86_64-w64-mingw32` | `lib/windows-x64` | Windows 本机 |
+| `x86_64-unknown-linux-gnu` | `lib/linux-x64` | WSL / Linux 本机（SDL 后端） |
+| `aarch64-unknown-linux-gnu` | `lib/linux-arm64-sdl` | 交叉到 Pi（桌面，SDL） |
+| `aarch64-unknown-linux-gnu --backend drm` | `lib/linux-arm64` | 交叉到 Pi（tty 独占，DRM+evdev） |
+
+```powershell
+./scripts/build.ps1 -Target x86_64-w64-mingw32 -Examples
+./scripts/build-example.ps1 -Target aarch64-unknown-linux-gnu -Backend sdl
+```
+```bash
+./scripts/build.sh --target aarch64-unknown-linux-gnu --backend drm
+./scripts/build-example.sh --target x86_64-unknown-linux-gnu
+```
+
+要点：
+
+* `--target` / `-Target` 与宿主三元组相同时不再透传给 `cjpm`（否则 cjpm 打
+  `the '--target' option will be ignored` 告警）；
+* `-LibDir` / `--lib-dir` 仍然优先级最高，需要非常规组合时用它；
+* 交叉编译**还要求 SDK 里带目标平台的 stdlib 模块**（`$CANGJIE_HOME/modules/linux_aarch64_cjnative`），
+  缺失时脚本会先打印警告，cjc 随后报 `failed to detect cangjie modules`。
+
+---
+
 ---
 
 ## 3. 路径 B：WSL（Ubuntu 24.04 + WSLg）

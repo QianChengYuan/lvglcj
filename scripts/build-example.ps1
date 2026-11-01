@@ -9,15 +9,40 @@
 #   pwsh scripts/build-example.ps1                  # 构建 + 拷 DLL
 #   pwsh scripts/build-example.ps1 -Run all         # 构建后直接跑 `main all`
 #   pwsh scripts/build-example.ps1 -LibDir lib/windows-x64
+#   pwsh scripts/build-example.ps1 -Target aarch64-unknown-linux-gnu -Backend sdl
+#
+# -Target 按目标三元组选库目录（cjpm 1.2.0 不支持 [target.<triple>.ffi.c]，只能脚本做）：
+#   x86_64-w64-mingw32 → lib/windows-x64
+#   x86_64-unknown-linux-gnu → lib/linux-x64
+#   aarch64-unknown-linux-gnu → lib/linux-arm64-sdl（-Backend drm 时 lib/linux-arm64）
 param(
     [string]$LibDir = "",
-    [string]$Run = ""
+    [string]$Run = "",
+    [string]$Target = "",
+    [string]$Backend = "sdl"
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Examples = Join-Path $Root "examples"
 
+function Resolve-LibDirForTarget([string]$triple, [string]$backend) {
+    switch ($triple) {
+        "x86_64-w64-mingw32" { return "lib/windows-x64" }
+        "x86_64-unknown-linux-gnu" { return "lib/linux-x64" }
+        "aarch64-unknown-linux-gnu" {
+            if ($backend -eq "drm") { return "lib/linux-arm64" }
+            return "lib/linux-arm64-sdl"
+        }
+        "aarch64-apple-darwin" { return "lib/macos-arm64" }
+        "x86_64-apple-darwin" { return "lib/macos-x64" }
+        default { throw "未知目标三元组 '$triple'" }
+    }
+}
+
+if ($LibDir -eq "" -and $Target -ne "") {
+    $LibDir = Resolve-LibDirForTarget $Target $Backend
+}
 if ($LibDir -eq "") {
     if ($IsWindows) {
         $LibDir = "lib/windows-x64"
@@ -33,7 +58,26 @@ Write-Host "[build-example] LVGLCJ_LIB_DIR=$LibAbs"
 
 Push-Location $Examples
 try {
-    cjpm build --cfg
+    $hostTriple = if ($IsWindows) {
+        "x86_64-w64-mingw32"
+    } elseif ($IsMacOS) {
+        if ((& uname -m).Trim() -eq "arm64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" }
+    } else {
+        $m = (& uname -m).Trim()
+        if ($m -eq "aarch64" -or $m -eq "arm64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" }
+    }
+    if ($Target -ne "" -and $Target -ne $hostTriple) {
+        if ($Target -eq "aarch64-unknown-linux-gnu" -and -not $env:LVGLCJ_AARCH64_SDL_LIB) {
+            Write-Host "[build-example] 交叉到 aarch64 需要 LVGLCJ_AARCH64_SDL_LIB（aarch64 的 SDL2/FreeType 库目录）"
+        }
+        if ($Target -eq "aarch64-unknown-linux-gnu" -and $env:CANGJIE_HOME `
+            -and -not (Test-Path (Join-Path $env:CANGJIE_HOME "modules/linux_aarch64_cjnative"))) {
+            Write-Host "[build-example] 警告：$env:CANGJIE_HOME/modules/linux_aarch64_cjnative 不存在，cjc 交叉编译会失败" -ForegroundColor Yellow
+        }
+        cjpm build --cfg --target $Target
+    } else {
+        cjpm build --cfg
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "cjpm build 失败（exit $LASTEXITCODE）"
     }

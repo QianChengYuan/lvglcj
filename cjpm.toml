@@ -17,6 +17,8 @@ target-dir = "target"
 #   WSL 本机验证：export LVGLCJ_LIB_DIR=lib/linux-x64        # ELF x86_64（SDL2 后端）
 #   交叉到 Pi：   export LVGLCJ_LIB_DIR=lib/linux-arm64-sdl  # ELF aarch64（SDL 后端，桌面里跑）
 #   （lib/linux-arm64 是老 DRM+evdev 版，在 labwc 桌面下会抢 DRM master，仅在 tty 独占场景用）
+# 不想手工设变量：用 scripts/build*.{ps1,sh} 的 -Target/--target <三元组>，脚本按
+# 三元组自动映射到上面某个目录（cjpm 1.2.0 不支持 [target.<triple>.ffi.c]，映射只能放在脚本里）。
 # 每个目录只需两个文件：liblvgl.a + liblvglcjshim.a
 # lv_conf.h 是配置源，统一放 native/config/{sdl,pi}/，不随产物走。
 lvgl = { path = "${LVGLCJ_LIB_DIR}" }

@@ -108,6 +108,27 @@ gcc -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE \
 
 ---
 
+### A12. 能不能在 `cjpm.toml` 里按目标三元组自动选库（`[target.x86_64-*.ffi.c]`）？
+
+不能。cjpm 1.2.0 解析 `[target.<triple>]` 时只认 `compile-option` / `link-option` /
+`dependencies` / `bin-dependencies` 等字段，**`ffi` 段会被忽略**，仍然读全局 `[ffi.c]`。
+（实测：把全局 `[ffi.c]` 指向不存在的目录、在 `[target.x86_64-w64-mingw32.ffi.c]` 里写正确路径，
+构建依旧报 `can not find the library 'lvgl'`。）
+
+所以三元组 → 库目录的映射只能由外层脚本完成：
+
+```powershell
+./scripts/build.ps1 -Target x86_64-w64-mingw32 -Examples
+./scripts/build-example.ps1 -Target aarch64-unknown-linux-gnu -Backend sdl
+```
+```bash
+./scripts/build.sh --target aarch64-unknown-linux-gnu --backend drm
+```
+
+映射表见 `docs/build-guide.md` 2.4。另一个可选做法是把 `[ffi.c]` 写成**相对路径**
+（`path = "lib/windows-x64"`，cjpm 按模块根解析），但那样就只能绑定一个平台，等于把
+环境变量换成了写死路径，不能同时支持四份产物。
+
 ## B. 启动阶段
 
 ### B1. `error while loading shared libraries: libcangjie-runtime.so`

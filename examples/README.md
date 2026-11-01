@@ -28,6 +28,26 @@ pwsh scripts/build-example.ps1 -Run all     # 构建后直接跑全功能演示
 `libgcc_s_seh-1.dll`、`libwinpthread-1.dll` 等依赖连同仓颉运行时的两个 DLL 一起拷到
 `target/release/bin/`，**不需要再改 PATH**，双击 `main.exe` 也能跑。
 
+## 按目标三元组选库
+
+`cjpm` 1.2.0 不支持 `[target.<triple>.ffi.c]`，所以三元组 → 预编译库目录的映射由脚本做：
+
+| 三元组 | 库目录 |
+| --- | --- |
+| `x86_64-w64-mingw32` | `lib/windows-x64` |
+| `x86_64-unknown-linux-gnu` | `lib/linux-x64` |
+| `aarch64-unknown-linux-gnu` | `lib/linux-arm64-sdl`（`--backend drm` → `lib/linux-arm64`） |
+
+```powershell
+pwsh scripts/build-example.ps1 -Target aarch64-unknown-linux-gnu -Backend sdl
+```
+```bash
+./scripts/build-example.sh --target aarch64-unknown-linux-gnu --backend sdl
+```
+
+交叉到 aarch64 还需要：SDK 带 `modules/linux_aarch64_cjnative`，以及 `LVGLCJ_AARCH64_SDL_LIB`
+指向 aarch64 的 SDL2/FreeType 库目录。
+
 ## 手工构建
 
 ```powershell
