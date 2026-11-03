@@ -93,3 +93,17 @@ foreign func lv_sdl_window_create(horRes: Int32, verRes: Int32): CPointer<lv_dis
 foreign func lv_sdl_mouse_create(): CPointer<lv_indev_t>
 
 foreign func lv_sdl_keyboard_create(): CPointer<lv_indev_t>
+
+/**
+ * SDL 的 hint 设置（`SDL_SetHint`，来自 SDL2 而非 LVGL）。
+ *
+ * 只在 Windows 上声明：进程默认是 DPI-unaware，Windows 会把 800x480 的画面按
+ * 显示缩放（本机 125%）整体做位图插值拉伸，整屏发虚；先声明 per-monitor 感知
+ * 后窗口按物理像素直出，1:1 清晰。Linux/macOS 没有 DPI 虚拟化问题，
+ * 且 DRM/fbdev 版根本不链接 SDL2 —— 用 `@When` 关掉，免得引入解不开的符号。
+ *
+ * 返回值是 `SDL_bool`（C 的 int）：false 只表示这个 SDL 版本不认识该 hint 名，
+ * 不影响窗口创建。
+ */
+@When[os == "Windows"]
+foreign func SDL_SetHint(name: CString, value: CString): Int32

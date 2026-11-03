@@ -229,6 +229,27 @@ $env:PATH = "C:\msys64\ucrt64\bin;" + ($env:PATH -split ';' -ne 'C:\msys64\ucrt6
 
 fbdev 只接受灰度 8bpp；彩色屏请改 16/32 位。
 
+### C7. Windows 上画面比 Linux 糊（文字发虚、细线断开）
+
+不是渲染质量问题，是 **Windows 显示缩放 + 进程 DPI-unaware**：系统把 800x480 的画面当成
+96dpi 内容，按缩放比（本机 125%）整体做位图插值放大到 1000x600 再显示。
+
+核对：
+
+```powershell
+# 系统缩放（120 = 125%）
+Get-ItemProperty "HKCU:\Control Panel\Desktop\WindowMetrics" -Name AppliedDPI
+# 窗口实际的 DPI 感知（0 = unaware，2 = per-monitor）
+# 用 GetProcessDpiAwareness / GetDpiForWindow 查运行中的进程
+```
+
+本库的 `Display.sdl()` 已在 Windows 上自动设 `SDL_WINDOWS_DPI_AWARENESS=permonitorv2`，
+窗口按物理像素 1:1 输出，与 Linux 一样锐利。**代价是窗口在 125% 屏上视觉小一圈**（不再被系统放大）。
+
+若想保持原来的物理大小又清晰，只能让渲染分辨率跟上缩放：
+`lv_sdl_window_create(1000, 600)` + 界面尺寸按 1.25 倍重排。
+注意 `lv_sdl_window_set_zoom()` 解决不了 —— 它只放大窗口，纹理仍是 800x480，照样插值。
+
 ---
 
 ## D. 中文与字体

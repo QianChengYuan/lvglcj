@@ -87,6 +87,7 @@ public class Display {
      * @throws[LvglException] SDL 窗口或渲染器创建失败（无显示环境、当前构建未启用 LV_USE_SDL）时
      */
     public static func sdl(w: Int32, h: Int32): Display {
+        prepareSdlBackend()
         let disp = unsafe { lv_sdl_window_create(w, h) }
         if (disp.isNull()) {
             throw LvglException("SDL 后端创建失败（${w}x${h}）")
@@ -218,3 +219,30 @@ public class Display {
         handle
     }
 }
+
+/**
+ * SDL 后端的平台前置：Windows 上先声明 DPI 感知。
+ *
+ * Windows 的显示缩放（本机 125%）对 DPI-unaware 的进程是**整块位图插值拉伸**：
+ * 800x480 的画面被系统放大到 1000x600 显示，文字边缘发灰、细线断开 —— 不是渲染
+ * 质量差，而是显示环节被重采样。设 `SDL_WINDOWS_DPI_AWARENESS=permonitorv2`
+ * （等价 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`）后窗口按物理像素直出，
+ * 与 Linux 一样锐利；代价是窗口视觉上小一圈（不再被系统放大）。
+ *
+ * 必须在 `SDL_Init` 之前调用 —— 也就是第一次 `lv_sdl_window_create` 之前；
+ * `Display.sdl()` 里就是唯一入口。
+ */
+@When[os == "Windows"]
+private func prepareSdlBackend(): Unit {
+    // hint 名走 SDL 的 "SDL_WINDOWS_DPI_AWARENESS"（同样可用同名环境变量覆盖）。
+    // 老版本 SDL 不认识这个 hint 时返回 false，退化为原来的模糊显示，不影响创建窗口。
+    let _ = withCString("SDL_WINDOWS_DPI_AWARENESS") {
+        name => withCString("permonitorv2") {
+            value => unsafe { SDL_SetHint(name, value) }
+        }
+    }
+}
+
+/** 非 Windows：Linux/macOS 没有 DPI 位图虚拟化，且 DRM/fbdev 版不链接 SDL2 */
+@When[os != "Windows"]
+private func prepareSdlBackend(): Unit {}
