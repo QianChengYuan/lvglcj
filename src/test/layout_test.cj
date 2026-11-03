@@ -224,4 +224,29 @@ class LayoutTests {
         @Expect(cell.height(), 30)
         root.close()
     }
+
+    /**
+     * 容器级 `gridAlign` 必须拒绝 `STRETCH`。
+     *
+     * LVGL 9.5 的 `grid_align()`（`lv_grid.c:610`）的 switch 只处理 START/CENTER/END/SPACE_*，
+     * STRETCH 落到 `default: break`，轨道起点 `pos_array[0]` 保持 `lv_malloc` 的未初始化内容
+     * → 子对象坐标是随机大数、整块 grid 不可见（示例 `all` 的布局页就这么白了一块）。
+     * 这是**运行时**才会显形的坑，所以必须在入口拦掉。
+     */
+    @Tag[requires_display]
+    @TestCase
+    func testGridAlignRejectsStretch() {
+        let root = bareBox(screen(), 300, 100)
+        root.grid([GridSize.Fr(1), GridSize.Fr(1)], [GridSize.Fr(1)])
+        @ExpectThrows[LvglException](root.gridAlign(col: GridAlign.STRETCH))
+        @ExpectThrows[LvglException](root.gridAlign(col: GridAlign.START, row: GridAlign.STRETCH))
+        // 合法值不受影响，且布局仍能算对
+        root.gridAlign(col: GridAlign.START, row: GridAlign.START)
+        let cell = bareBox(root, 10, 10)
+        cell.place(col: 1, row: 0)
+        root.updateLayout()
+        @Expect(cell.x(), 150)
+        @Expect(cell.y(), 0)
+        root.close()
+    }
 }

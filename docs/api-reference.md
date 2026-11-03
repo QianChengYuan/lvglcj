@@ -585,12 +585,12 @@ right.size(80, 0)
 | 方法 | 说明 |
 |---|---|
 | `grid(cols: Array<GridSize>, rows: Array<GridSize>)` | 一次设置列/行描述符（内部切到 grid 布局） |
-| `gridAlign(col!: GridAlign, row!: GridAlign = START)` | 轨道整体在容器里的分布 |
+| `gridAlign(col!: GridAlign, row!: GridAlign = START)` | 轨道整体在容器里的分布；不支持 `STRETCH`（抛 `LvglException`） |
 | `place(col!: Int32, row!: Int32, colSpan!: Int32 = 1, rowSpan!: Int32 = 1, colAlign!: GridAlign = STRETCH, rowAlign!: GridAlign = STRETCH)` | 把本控件放进某个单元格 |
 
 ```cangjie
 grid.grid([GridSize.Fr(1), GridSize.Fr(2)], [GridSize.Content, GridSize.Px(40)])
-    .gridAlign(col: GridAlign.STRETCH, row: GridAlign.STRETCH)
+    .gridAlign(col: GridAlign.START, row: GridAlign.START)
 title.place(col: 0, row: 0, colSpan: 2)
 body.place(col: 1, row: 1)
 ```
@@ -606,6 +606,10 @@ body.place(col: 1, row: 1)
 >
 > `GridAlign` 的顺序是 START / **CENTER** / END，与 `FlexAlign` 的 START / **END** / CENTER **不同**，
 > 抄错不会编译失败，只会静默对齐到别处。
+>
+> **`gridAlign()` 不能用 `STRETCH`。** LVGL 9.5 的 `grid_align()` 省略了这个分支，轨道起点会读
+> 未初始化内存（子对象坐标变成随机大数、整块 grid 不显示）；本库直接抛 `LvglException`。
+> `Fr`/`Px` 轨道本身已铺满内容区，要让**子对象**填满单元格用 `place()`（默认就是 STRETCH）。
 
 ### 动画 `Anim` / `Timeline`
 

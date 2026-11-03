@@ -26,16 +26,26 @@ private func page(tv: TabView, name: String): Container {
     let box = Container(t)
     box.size(776, 392)
     box.setStylePadAll(8)
-    box.flex(FlexFlow.COLUMN, gap: 8)
+    box.flex(FlexFlow.COLUMN, gap: 6)
     return box
 }
 
-/** 横向一行 */
+/**
+ * 横向一行。
+ *
+ * 三个必须归零/显式设置的点（都是 LVGL 默认主题挖的坑）：
+ * - 主题给普通对象的 `pad_all` 是中屏 20px、边框 2px。不归零的话，一行高 46 的容器
+ *   内容区只剩 46 - 2*(20+2) = 2px，里面的控件会被裁掉、并撑出滚动条。
+ * - 主题还留了 `pad_row` / `pad_column`（不受 `pad_all` 影响），所以要 `flex(gap:)` 显式设。
+ * - 垂直居中要写 `trackCross`：`cross` 只在同一行内高矮不一时才看得出差别。
+ */
 private func row(parent: Widget, h: Int32, gap!: Int32 = 8): Container {
     let r = Container(parent)
     r.size(760, h)
+    r.setStylePadAll(0)
+    r.setStyleBorderWidth(0)
     r.flex(FlexFlow.ROW, gap: gap)
-    r.flexAlign(FlexAlign.START, cross: FlexAlign.CENTER)
+    r.flexAlign(FlexAlign.START, cross: FlexAlign.CENTER, trackCross: FlexAlign.CENTER)
     return r
 }
 
@@ -46,13 +56,26 @@ private func caption(parent: Widget, s: String): Label {
     return l
 }
 
-/** 纯色圆角块，用来演示布局与样式 */
-private func block(parent: Widget, w: Int32, h: Int32, r: UInt8, g: UInt8, b: UInt8): Container {
+/**
+ * 指定尺寸、且内边距/边框归零的容器。
+ *
+ * LVGL 默认主题会给普通对象留下中屏 20px 的 `pad_all` 和 2px 边框：固定高度的容器
+ * 若不清零，内容区会被吃掉 44px，里面的子对象随即溢出、被裁剪。凡是「固定尺寸 +
+ * 里面放别的东西」的容器都走这里。
+ */
+private func bareBox(parent: Widget, w: Int32, h: Int32): Container {
     let c = Container(parent)
     c.size(w, h)
+    c.setStylePadAll(0)
+    c.setStyleBorderWidth(0)
+    return c
+}
+
+/** 纯色圆角块，用来演示布局与样式 */
+private func block(parent: Widget, w: Int32, h: Int32, r: UInt8, g: UInt8, b: UInt8): Container {
+    let c = bareBox(parent, w, h)
     c.setStyleBgColor(r, g, b)
     c.setStyleRadius(8)
-    c.setStyleBorderWidth(0)
     return c
 }
 
@@ -78,7 +101,7 @@ private func setKeyboardVisible(kb: Keyboard, st: KbState, on: Bool): Unit {
 private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit {
     caption(box, "基础控件：按钮 / 开关 / 复选框 / 滑块 / 进度条 / 圆弧 / LED / 下拉 / 滚轮 / 数字框 / 文本域")
 
-    let r1 = row(box, 52)
+    let r1 = row(box, 48)
     let btn = Button(r1)
     btn.size(140, 44)
     let bl = Label(btn)
@@ -110,7 +133,7 @@ private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit 
         _ => println("[showcase] 复选框 = ${cb.isChecked()}")
     }
 
-    let r2 = row(box, 52)
+    let r2 = row(box, 44)
     let slider = Slider(r2)
     slider.size(240, 18)
     slider.range(0, 100)
@@ -131,7 +154,7 @@ private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit 
         v => bar.value(v, anim: false)
     }
 
-    let r3 = row(box, 92)
+    let r3 = row(box, 84)
     let arc = Arc(r3)
     arc.size(80, 80)
     arc.angles(0, 270)
@@ -161,7 +184,7 @@ private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit 
             }
     }
 
-    let r4 = row(box, 46, gap: 16)
+    let r4 = row(box, 92, gap: 16)
     let dd = Dropdown(r4)
     dd.size(180, 40)
     dd.options("选项 A\n选项 B\n选项 C")
@@ -200,8 +223,7 @@ private func showcaseWidgets(box: Widget, kb: Keyboard, kbState: KbState): Unit 
 private func showcaseLayout(box: Widget): Unit {
     caption(box, "flex：三个色块按 1 : 2 : 1 分配宽度；grid：2 行 3 列，中间那个跨两列")
 
-    let fr = Container(box)
-    fr.size(760, 72)
+    let fr = bareBox(box, 760, 72)
     fr.flex(FlexFlow.ROW, gap: 6)
     let a = block(fr, 100, 64, 0xE5, 0x4B, 0x4B)
     a.flexGrow(1)
@@ -210,10 +232,11 @@ private func showcaseLayout(box: Widget): Unit {
     let c = block(fr, 100, 64, 0x66, 0xBB, 0x6A)
     c.flexGrow(1)
 
-    let g = Container(box)
-    g.size(760, 176)
+    let g = bareBox(box, 760, 140)
     g.grid([GridSize.Fr(1), GridSize.Fr(1), GridSize.Fr(1)], [GridSize.Fr(1), GridSize.Fr(1)])
-    g.gridAlign(col: GridAlign.STRETCH, row: GridAlign.STRETCH)
+    // 容器级对齐只能用 START/CENTER/END/SPACE_*（STRETCH 在 LVGL 侧是未实现的，
+    // 会让轨道起点取到未初始化内存）；子对象填满单元格靠 place() 的默认 STRETCH。
+    g.gridAlign(col: GridAlign.START, row: GridAlign.START)
     let g1 = block(g, 100, 80, 0xFF, 0xB3, 0x00)
     g1.place(col: 0, row: 0)
     let g2 = block(g, 100, 80, 0x8E, 0x24, 0xAA)
@@ -227,8 +250,7 @@ private func showcaseLayout(box: Widget): Unit {
 
     // 滚动：内容超宽时容器可滚，用 scrollTo 演示"滚到末尾"
     caption(box, "滚动容器：点击按钮滚到末尾（scrollToX，带动画）")
-    let scroll = Container(box)
-    scroll.size(760, 60)
+    let scroll = bareBox(box, 760, 46)
     scroll.scrollable(on: true)
     scroll.scrollDir(LV_DIR_HOR)
     let longText = Label(scroll)
@@ -242,6 +264,7 @@ private func showcaseLayout(box: Widget): Unit {
     sbtn.onClick {
         => scroll.scrollToX(scroll.width(), anim: true)
     }
+
 }
 
 /* ==================== 3. 样式 ==================== */
@@ -464,8 +487,7 @@ private func showcaseGroup(box: Widget): Unit {
 private func showcaseAnim(box: Widget): Unit {
     caption(box, "Anim：translateX 从 -120 到 560 像素来回（playback），可暂停/继续/取消")
 
-    let track = Container(box)
-    track.size(760, 92)
+    let track = bareBox(box, 760, 92)
     track.setStyleBgOpa(0)
     let moving = block(track, 64, 64, 0x7E, 0x57, 0xC2)
     moving.align(LV_ALIGN_LEFT_MID)
@@ -513,8 +535,7 @@ private func showcaseAnim(box: Widget): Unit {
 
     // Timeline：两段动画按时间轴先后播放
     caption(box, "Timeline：两段动画依次播放（0ms / 700ms）")
-    let tlTrack = Container(box)
-    tlTrack.size(760, 70)
+    let tlTrack = bareBox(box, 760, 70)
     tlTrack.setStyleBgOpa(0)
     let t1 = block(tlTrack, 48, 48, 0x42, 0xA5, 0xF5)
     t1.align(LV_ALIGN_LEFT_MID)

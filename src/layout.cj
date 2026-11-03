@@ -193,7 +193,7 @@ extend Widget {
      *
      * ```cangjie
      * grid.grid([GridSize.Fr(1), GridSize.Fr(2)], [GridSize.Content, GridSize.Px(40)])
-     *     .gridAlign(col: GridAlign.STRETCH, row: GridAlign.STRETCH)
+     *     .gridAlign(col: GridAlign.START, row: GridAlign.START)
      * label.place(col: 0, row: 0)
      * wide.place(col: 0, row: 1, colSpan: 2)
      * ```
@@ -224,12 +224,33 @@ extend Widget {
 
     /**
      * 轨道整体在容器里的分布（等价 `lv_obj_set_grid_align`）。
-     * @param col 列方向的分布方式
-     * @param row 行方向的分布方式
+     *
+     * **不接受 `GridAlign.STRETCH`**：LVGL 9.5 的 `grid_align()`（`lv_grid.c:610`）
+     * 的 switch 只处理 START / CENTER / END / SPACE_*，遇到 STRETCH 会落到
+     * `default: break`，于是轨道起点 `pos_array[0]` 保持 `lv_malloc` 出来的
+     * 未初始化内容 —— 子对象坐标变成随机大数、整块 grid 不可见。
+     *
+     * 语义上也不需要它：`Fr` / `Px` 轨道本身已经铺满内容区；想让**子对象填满单元格**
+     * 用 `place()`（它默认就是 STRETCH），那是另一个属性（`grid_cell_x/y_align`）。
+     *
+     * ```cangjie
+     * grid.grid([GridSize.Fr(1), GridSize.Fr(2)], [GridSize.Px(40), GridSize.Fr(1)])
+     *     .gridAlign(col: GridAlign.START, row: GridAlign.START)
+     * item.place(col: 0, row: 0)          // 子对象填满单元格 → 用 place 的默认 STRETCH
+     * ```
+     * @param col 列方向的分布方式（START / CENTER / END / SPACE_*）
+     * @param row 行方向的分布方式（同上）
      * @return this，便于链式调用
+     * @throws[LvglException] col 或 row 为 `GridAlign.STRETCH` 时
      */
     public func gridAlign(col!: GridAlign, row!: GridAlign = GridAlign.START): Widget {
         App.assertUIThread("Widget.gridAlign")
+        if (col.code() == LV_GRID_ALIGN_STRETCH || row.code() == LV_GRID_ALIGN_STRETCH) {
+            throw LvglException(
+                "gridAlign 不支持 STRETCH：LVGL 9.5 的 grid_align() 没有处理这个值，" +
+                "轨道起点会读到未初始化内存（子对象坐标变成随机大数、grid 整块不显示）。" +
+                "Fr/Px 轨道已铺满内容区，传 START 即可；要让子对象填满单元格请用 place() 的默认 STRETCH")
+        }
         unsafe { lv_obj_set_grid_align(raw(), col.code(), row.code()) }
         this
     }
